@@ -8,3 +8,6 @@ shots/
 
 # Local working notes, not part of the project
 CLAUDE.md
+
+# M0 determinism artefact
+node-trace.json

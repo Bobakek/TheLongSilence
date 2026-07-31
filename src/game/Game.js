@@ -29,8 +29,17 @@ import { CANTOS, LOGS, INTRO_LINES } from './lore.js';
 import { Directives, UPGRADES } from './directives.js';
 import { Director, SEQUENCES } from './Director.js';
 import { Encounters } from './encounters.js';
+/* The rules that the server also has to agree with. Everything imported here
+   used to be a method on this class; the bodies moved to src/sim so a headless
+   process can run them, and what is left below is the wiring plus everything
+   the simulation has no opinion about — camera, HUD, audio, transitions. */
+import {
+  positionSystem, applyProximity,
+  applyDriveInput as simApplyDrive, engageFold as simEngageFold, dropFold as simDropFold,
+  nearestBodyInfo as simNearestBody, foldFloor as simFoldFloor, foldCeiling as simFoldCeiling,
+  canFold as simCanFold, scanRangeFor as simScanRange, inScanRange as simInScanRange,
+} from '../sim/index.js';
 
-const ORBIT_TIME = 1;            // orbit rates are already tuned in generate.js
 const RESONATOR_COUNT = 7;
 
 const _v = new THREE.Vector3();
@@ -669,28 +678,7 @@ export class Game {
 
   /* ------------------------------------------------------------- updates */
 
-  _positionSystem(dt) {
-    for (const b of this.bodies) {
-      if (b.kind === 'planet') {
-        b.phase += b.spec.orbitSpeed * dt * ORBIT_TIME;
-        const a = b.spec.orbitR;
-        b.absPos.set(Math.cos(b.phase) * a, Math.sin(b.phase * 1.3) * a * b.spec.orbitInc, Math.sin(b.phase) * a);
-      } else if (b.kind === 'moon') {
-        b.phase += b.spec.orbitSpeed * dt * ORBIT_TIME;
-        const a = b.spec.orbitR;
-        b.absPos.copy(b.parent.absPos).add(
-          _v.set(Math.cos(b.phase) * a, Math.sin(b.phase * 1.7) * a * b.spec.orbitInc, Math.sin(b.phase) * a)
-        );
-      } else if (b.kind === 'station') {
-        const host = this.bodies.find((x) => x.spec === b.station.hostSpec);
-        b.absPos.copy(host ? host.absPos : _v.set(0, 0, 0)).add(b.station.offset);
-      } else if (b.kind === 'anomaly') {
-        const host = this.bodies.find((x) => x.spec === b.hostSpec);
-        if (host) b.absPos.copy(host.absPos).add(b.offset);
-        else b.absPos.copy(b.offset);
-      }
-    }
-  }
+  _positionSystem(dt) { positionSystem(this.bodies, dt); }
 
   _bakeStep() {
     if (!this.bakeQueue.length) return;
@@ -761,8 +749,12 @@ export class Game {
     input.uiOpen = uiOpen;
     if (uiOpen && document.pointerLockElement) document.exitPointerLock();
 
-    // ------------------------------------------------------------ orbits
-    this._positionSystem(dt);
+    /* ------------------------------------------------------------ orbits
+       Networked, the orbits are not ours to advance: `NetClient` seeks them to
+       the server's tick on every predicted step, because the approach envelope
+       is judged against planet positions and a client whose worlds ran on its
+       own clock would be pushed by a planet the room has somewhere else. */
+    if (!this.net) this._positionSystem(dt);
 
     // ------------------------------------------------- first-person input
     // On foot the mouse turns your head. At the helm it flies the ship, and
@@ -846,26 +838,61 @@ export class Game {
     // ------------------------------------------------------------ flight
     const flying = (this.mode === 'pilot' || this.mode === 'exterior') && !this.transition;
     if (!uiOpen && flying) {
-      if (input.tapped('stop')) { ship.throttle = 0; ship.vel.multiplyScalar(0.02); this.cancelAutopilot(); }
-      if (input.tapped('fold') || input.tapped('foldBtn')) this.toggleFold();
+      if (input.tapped('stop')) {
+        if (this.net) this.net.setButtons({ stop: true });
+        else { ship.throttle = 0; ship.vel.multiplyScalar(0.02); this.cancelAutopilot(); }
+      }
+      if (input.tapped('fold') || input.tapped('foldBtn')) {
+        if (this.net) this.net.setButtons({ fold: true });
+        else this.toggleFold();
+      }
       if (input.tapped('target')) this.cycleTarget();
       if (input.tappedCode('KeyG') || input.tapped('auto')) this.toggleAutopilot();
       if (input.tappedCode('KeyL')) this.land();
 
-      ship.throttle = THREE.MathUtils.clamp(ship.throttle + input.state.throttleDelta * dt * 0.9, 0, 1);
-      ship.boost += ((input.state.boost && !ship.foldMode ? 1 : 0) - ship.boost) * Math.min(1, dt * 5);
+      if (!this.net) simApplyDrive(ship, dt, input.state);
     } else {
       input.state.pitch = input.state.yaw = input.state.roll = 0;
       input.state.boost = 0;
     }
 
+    /* ------------------------------------------------------------ networked
+       The room is still the authority, but the client no longer waits for it.
+       `NetClient.update` runs the same `stepShip` on the same inputs, in whole
+       server ticks, straight into this ship — so the stick is answered on the
+       frame it moved — and replays itself against every snapshot.
+
+       The autopilot and the local envelope are deliberately absent: both are
+       inputs to the room's simulation rather than to ours, and running them
+       here would be predicting with rules the server does not have. */
+    if (this.net) {
+      this.net.update(dt, this._netSample);
+      this.net.interpolate();
+      ship.object.quaternion.copy(ship.quat);
+      ship.updateVisuals(dt, this.time);
+      this.origin.copy(ship.absPos);
+      ship.object.position.set(0, 0, 0);
+      this.player.update(dt, input, uiOpen);
+      if (this.mode === 'walk' && this.player.mode === 'seated') this.mode = 'pilot';
+      if (this.mode === 'pilot' && this.player.mode === 'walk') this.mode = 'walk';
+      this.updateCamera(dt);
+      this._updateWorld(dt);
+      // Drawing-buffer height, not CSS height: the beacon solve is in device
+      // pixels, and dynamic resolution moves the two apart every few seconds.
+      this.remoteShips?.update(this.net.remotes, this.origin, this.camera,
+        (this.engine.height || 1080) * (this.engine.pixelRatio || 1));
+      this._drainNetEvents();
+      this.updateScan(dt, uiOpen);
+      this.updatePost(dt);
+      this.shake = Math.max(0, this.shake - dt * 1.6);
+      this.hud.update(dt);
+      this.audio.update(dt, this);
+      return;
+    }
+
     // proximity governs fold speed and forces a drop-out near masses
     const near = this.nearestBodyInfo();
-    // Fold speed is proportional to how far you are from the nearest mass, so
-    // an approach decelerates itself. Capped below c because the drive folds
-    // space rather than moving through it, and because a whole system crossed
-    // in two seconds is not a journey.
-    const foldCeiling = THREE.MathUtils.clamp(near.surfaceDist * 1.15, 900, 240000);
+    const foldCeiling = simFoldCeiling(near);
     if (ship.foldMode && near.surfaceDist < this.foldFloor(near)) this.toggleFold(false);
     if (ship.foldMode && ship.foldCharge <= 0.001) this.toggleFold(false);
 
@@ -2737,55 +2764,73 @@ export class Game {
   /**
    * A soft approach envelope instead of a wall. Real ships do not stop dead on
    * a surface: you feel the field push back, the drive cuts, and you settle.
+   *
+   * The envelope itself is in `src/sim/proximity.js`. `Game` is its host: it
+   * supplies `shake`, `proximityWarn`, `cancelAutopilot` and `setFold`, which
+   * is the whole interface the model needs from the game around it.
    */
-  updateProximity(dt) {
-    const ship = this.ship;
-    this.proximityWarn = null;
-    for (const b of this.bodies) {
-      if (!b.planet && b.kind !== 'star') continue;
-      const isStar = b.kind === 'star';
-      const floor = b.radius * (isStar ? 2.2 : 1.02);
-      const soft = b.radius * (isStar ? 4.0 : 1.16);
+  updateProximity(dt) { applyProximity(this.ship, this.bodies, dt, this); }
 
-      _v.copy(ship.absPos).sub(b.absPos);
-      const d = _v.length();
-      if (d > soft) continue;
-      _v.multiplyScalar(1 / Math.max(d, 1e-6));
+  /** The host half of the proximity contract; the drive's own rule is in sim. */
+  setFold(on) { this.toggleFold(on); }
 
-      const t = THREE.MathUtils.clamp((soft - d) / (soft - floor), 0, 1);
-      this.proximityWarn = isStar ? 'STELLAR PROXIMITY' : 'TERRAIN PROXIMITY';
+  /* ------------------------------------------------------------------- net */
 
-      // cancel automation and cut the drive as the envelope closes
-      if (t > 0.25) { this.cancelAutopilot(true); if (ship.foldMode) this.toggleFold(false); }
-      if (t > 0.5) ship.throttle = Math.min(ship.throttle, 1 - t);
+  /**
+   * Join a room. Opt-in only: `?net=ws://host:port` on the URL.
+   *
+   * Called after boot, so the system is already generated from the same seed
+   * the server used — the world is not replicated, it is regenerated, and the
+   * socket only ever carries ships.
+   */
+  async connectNet(url, system = 0) {
+    const [{ NetClient }, { RemoteShips }] = await Promise.all([
+      import('../net/Client.js'), import('../net/RemoteShips.js'),
+    ]);
+    const net = new NetClient(url, { system });
+    await net.connect();
 
-      // repulsion grows sharply, and inward velocity is bled off
-      const push = t * t * 120 + (d < floor ? 900 : 0);
-      ship.vel.addScaledVector(_v, push * dt);
-      const vn = ship.vel.dot(_v);
-      if (vn < 0) ship.vel.addScaledVector(_v, -vn * Math.min(1, t * 2.4));
-
-      if (d < floor) {
-        ship.absPos.copy(b.absPos).addScaledVector(_v, floor);
-        ship.hull = Math.max(0, ship.hull - 0.00035 * Math.min(200, Math.abs(vn)));
-        this.shake = Math.min(1, this.shake + 0.25);
-      }
-      this.shake = Math.min(1, this.shake + t * dt * 1.6);
-      if (isStar && t > 0.35) ship.hull = Math.max(0, ship.hull - dt * 0.05 * t);
+    if (net.welcome.seed !== this.galaxySeed) {
+      /* Refuse rather than limp on. A mismatched seed means the server's
+         planets are somewhere else entirely, so the envelope would push a ship
+         off nothing and the fold would be refused in open space — a confusing
+         failure a long way from its cause. */
+      net.close();
+      throw new Error(`seed mismatch: room ${net.welcome.seed}, client ${this.galaxySeed}`);
     }
+    if (net.welcome.system !== this.currentSystemId) await this.loadSystem(net.welcome.system, true);
+
+    // Prediction runs on this game's own ship and this game's own bodies.
+    // Nothing is copied between a "network ship" and a "render ship" because
+    // there is only one of each — see NetClient.attach.
+    net.attach(this.bodies, this.ship);
+    this._netSample = net.makeSampler(this.input.state);
+
+    this.net = net;
+    this.remoteShips = new RemoteShips(this.scene);
+    this.hud.log(`ROOM · ${this.system.star.name.toUpperCase()} · PILOT ${net.id}`, 'ok');
+    return net;
+  }
+
+  /** Turn what the room reported into the noises the cockpit would have made. */
+  _drainNetEvents() {
+    const ev = this.net.events;
+    if (!ev.length) return;
+    for (const e of ev) {
+      if (e === 'foldOn') { this.hud.setFold(true); this.audio.ping('fold'); }
+      else if (e === 'foldOff') { this.hud.setFold(false); this.audio.ping('unfold'); }
+      else if (e === 'foldRefused:tooDeep') {
+        this.hud.log('FOLD BLOCKED · TOO DEEP IN MASS', 'hi'); this.audio.ping('deny');
+      } else if (e === 'foldRefused:noCharge') {
+        this.hud.log('FOLD CHARGE INSUFFICIENT', 'hi');
+      }
+    }
+    ev.length = 0;
   }
 
   /* ------------------------------------------------------------ targeting */
 
-  nearestBodyInfo() {
-    let best = this.bodies[0], bd = Infinity;
-    for (const b of this.bodies) {
-      if (b.kind === 'anomaly' || b.kind === 'craft' || b.kind === 'station') continue;
-      const d = b.absPos.distanceTo(this.ship.absPos) - b.radius;
-      if (d < bd) { bd = d; best = b; }
-    }
-    return { body: best, surfaceDist: Math.max(bd, 1) };
-  }
+  nearestBodyInfo() { return simNearestBody(this.ship, this.bodies); }
 
   /** Body closest to the reticle, weighted by angular size. */
   aimTarget() {
@@ -2813,12 +2858,7 @@ export class Game {
     this.hud.log(`TARGET · ${this.target.name}`);
   }
 
-  scanRangeFor(b) {
-    const m = this.scanRangeMul;
-    if (b.kind === 'anomaly') return 40 * m;
-    if (b.kind === 'star') return b.radius * 26 * m;
-    return Math.max(b.radius * 11, 500) * m;
-  }
+  scanRangeFor(b) { return simScanRange(b, this.scanRangeMul); }
 
   updateScan(dt, uiOpen) {
     const aim = uiOpen ? null : this.aimTarget();
@@ -2830,7 +2870,7 @@ export class Game {
     this.input.pressed.delete('scanClick');
 
     const t = this.target;
-    const inRange = t && t.absPos.distanceTo(this.ship.absPos) < this.scanRangeFor(t) + (t.radius || 0);
+    const inRange = t && simInScanRange(this.ship, t, this.scanRangeMul);
     this.scanTarget = (aim === t && inRange) ? t : null;
 
     if (!this.scanTarget || !holding || (t && t.scanned)) {
@@ -2883,39 +2923,29 @@ export class Game {
 
   /* ------------------------------------------------------------ fold drive */
 
-  /* How far from a surface the drive will hold a fold, in world units.
-   *
-   * This has to be *one* number. It was two: engagement was refused inside 320
-   * units, and update() dropped the fold the moment `surfaceDist` fell under
-   * `radius*0.9 + 40` — thousands of units on any real world. So anywhere
-   * between the two, J engaged the drive and the next frame cancelled it, over
-   * and over, and what the ship did was shudder on the spot without going
-   * anywhere. That window is exactly where you are after a liftoff, which is
-   * why the drive looked broken specifically there. */
-  foldFloor(near) {
-    return (near.body ? near.body.radius * 0.9 : 0) + 40;
-  }
+  foldFloor(near) { return simFoldFloor(near); }
 
+  /* The rule for whether the drive engages is `canFold` in src/sim — the server
+   * has to reach the same verdict — and what is left here is what the refusal
+   * looks and sounds like, which is nobody else's business. */
   toggleFold(force) {
     const ship = this.ship;
     const want = force !== undefined ? force : !ship.foldMode;
     if (want === ship.foldMode) return;
     if (want) {
       const near = this.nearestBodyInfo();
-      if (near.surfaceDist < this.foldFloor(near)) {
+      const refused = simCanFold(ship, near);
+      if (refused === 'tooDeep') {
         this.hud.log(`FOLD BLOCKED · TOO DEEP IN ${(near.body?.name || 'MASS').toUpperCase()}`, 'hi');
         this.audio.ping('deny');
         return;
       }
-      if (ship.foldCharge < 0.12) { this.hud.log('FOLD CHARGE INSUFFICIENT', 'hi'); return; }
-      ship.foldMode = true;
-      ship.throttle = 1;
+      if (refused === 'noCharge') { this.hud.log('FOLD CHARGE INSUFFICIENT', 'hi'); return; }
+      simEngageFold(ship);
       this.hud.setFold(true);
       this.audio.ping('fold');
     } else {
-      ship.foldMode = false;
-      ship.vel.multiplyScalar(0.0006);
-      ship.throttle = 0.15;
+      simDropFold(ship);
       this.hud.setFold(false);
       this.audio.ping('unfold');
     }

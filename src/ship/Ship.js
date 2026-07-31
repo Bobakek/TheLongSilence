@@ -1,7 +1,15 @@
 import * as THREE from 'three';
 import { buildHull } from './hull.js';
+import { createShipState, stepFlight } from '../sim/flight.js';
 
-/* ------------------------------------------------------------- flight model */
+/* ------------------------------------------------------------- flight model
+
+   The model itself lives in `src/sim/flight.js`, because the server has to run
+   the same one. What is left here is the hull: the geometry, the drive glow,
+   the radiators, the dish and the strobe — everything the simulation has no
+   opinion about. `Ship` holds the flight state as its own fields (that is what
+   `createShipState` is mixed in for), so every existing reader — `Game`, the
+   HUD, the cockpit instruments, `tools/` — keeps working unchanged. */
 
 export class Ship {
   constructor() {
@@ -18,34 +26,11 @@ export class Ship {
     this.gear = built.gear;
     this.length = built.length;
 
-    this.absPos = new THREE.Vector3(0, 0, 0);
-    this.vel = new THREE.Vector3();
-    this.quat = new THREE.Quaternion();
-    this.angVel = new THREE.Vector3();
-
-    this.throttle = 0;
-    this.boost = 0;
-    this.assist = true;
-
-    this.maxSpeed = 60;          // km/s cruise
-    this.boostMul = 4.2;
-    this.accel = 22;
-    this.turnAccel = new THREE.Vector3(2.6, 2.2, 3.4);   // pitch, yaw, roll
-    this.turnDamp = 3.1;
-    this.maxTurn = new THREE.Vector3(1.15, 0.95, 1.7);
-
-    this.foldMode = false;
-    this.foldSpeed = 0;
-    this.foldCharge = 1;
-    this.foldRegen = 1;
-    this.hull = 1;
-    this.hullMax = 1;
-    this.heat = 0.12;
-    this.scanRate = 1;
+    // The flight state, from the one place that defines it. A server-side ship
+    // is this object and nothing else, which is what keeps the two in step.
+    Object.assign(this, createShipState());
 
     this._fwd = new THREE.Vector3();
-    this._tmp = new THREE.Vector3();
-    this._tq = new THREE.Quaternion();
   }
 
   /** Gear is down only on the ground; in flight it is stowed and invisible. */
@@ -55,59 +40,8 @@ export class Ship {
   get speed() { return this.vel.length(); }
 
   update(dt, input, env) {
-    const q = this.quat;
-
-    // ---------------------------------------------------------- rotation
-    const ta = this.turnAccel;
-    const damp = this.foldMode ? this.turnDamp * 2.4 : this.turnDamp;
-    const authority = this.foldMode ? 0.20 : 1.0;
-    this.angVel.x += (input.pitch * ta.x * authority - this.angVel.x * damp) * dt;
-    this.angVel.y += (input.yaw * ta.y * authority - this.angVel.y * damp) * dt;
-    this.angVel.z += (input.roll * ta.z * authority - this.angVel.z * damp) * dt;
-    this.angVel.x = THREE.MathUtils.clamp(this.angVel.x, -this.maxTurn.x, this.maxTurn.x);
-    this.angVel.y = THREE.MathUtils.clamp(this.angVel.y, -this.maxTurn.y, this.maxTurn.y);
-    this.angVel.z = THREE.MathUtils.clamp(this.angVel.z, -this.maxTurn.z, this.maxTurn.z);
-
-    this._tq.setFromEuler(new THREE.Euler(this.angVel.x * dt, this.angVel.y * dt, this.angVel.z * dt, 'XYZ'));
-    q.multiply(this._tq).normalize();
-
-    // ------------------------------------------------------------ thrust
-    const fwd = this.forward.clone();
-    if (this.foldMode) {
-      // fold speed scales with distance to the nearest mass — you accelerate
-      // out of a gravity well and decelerate into one
-      const targetFold = env.foldCeiling;
-      this.foldSpeed += (targetFold - this.foldSpeed) * Math.min(1, dt * 0.55);
-      this.vel.copy(fwd).multiplyScalar(this.foldSpeed);
-      this.heat = Math.min(1, this.heat + dt * 0.02);
-      this.foldCharge = Math.max(0, this.foldCharge - dt * 0.012);
-    } else {
-      this.foldSpeed = 0;
-      const boostF = 1 + this.boost * (this.boostMul - 1);
-      const target = this._tmp.copy(fwd).multiplyScalar(this.throttle * this.maxSpeed * boostF);
-
-      // lateral / vertical translation thrusters
-      if (input.strafeX || input.strafeY) {
-        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
-        const upv = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
-        target.addScaledVector(right, input.strafeX * this.maxSpeed * 0.35);
-        target.addScaledVector(upv, input.strafeY * this.maxSpeed * 0.35);
-      }
-
-      const rate = this.assist ? this.accel * (1 + this.boost * 1.8) : this.accel * 0.35;
-      const dv = target.sub(this.vel);
-      const dvLen = dv.length();
-      if (dvLen > 1e-6) {
-        dv.multiplyScalar(Math.min(1, (rate * dt) / dvLen));
-        this.vel.add(dv);
-      }
-      this.heat += ((0.10 + this.throttle * 0.30 + this.boost * 0.5) - this.heat) * dt * 0.4;
-      this.foldCharge = Math.min(1, this.foldCharge + dt * 0.045 * this.foldRegen);
-    }
-
-    this.absPos.addScaledVector(this.vel, dt);
-    this.object.quaternion.copy(q);
-
+    stepFlight(this, dt, input, env);
+    this.object.quaternion.copy(this.quat);
     this.updateVisuals(dt, env.time);
   }
 

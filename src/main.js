@@ -1,6 +1,27 @@
 import './ui/style.css';
 import { Game } from './game/Game.js';
 import { INTRO_LINES } from './game/lore.js';
+import { runTrace, compareTraces } from './sim/trace.js';
+
+/* The determinism harness, hung on the window at import time — deliberately
+   before the boot gate below, and with no dependency on the game booting at
+   all. `tools/determinism.mjs` runs the same function in Node and compares; a
+   trace that needed a booted game would be measuring the renderer's warm-up
+   rather than the model.
+   `__simCompare` fetches the Node trace and does the comparison here, which
+   beats shipping ten thousand floats back out through a console. */
+window.__simTrace = runTrace;
+window.__simCompare = async (url = '/node-trace.json') => {
+  const theirs = await fetch(url).then((r) => {
+    if (!r.ok) throw new Error(`${url} → ${r.status}; run tools/determinism.mjs --out first`);
+    return r.json();
+  });
+  const mine = runTrace({
+    seed: theirs.meta.seed, system: theirs.meta.system,
+    ticks: theirs.meta.ticks, dt: theirs.meta.dt, sampleEvery: theirs.meta.sampleEvery,
+  });
+  return { ...compareTraces(theirs, mine), browserCounters: mine.counters, nodeCounters: theirs.counters };
+};
 
 const bootEl = document.getElementById('boot');
 const fill = document.getElementById('bootFill');
@@ -65,6 +86,20 @@ function desktopOnly() {
   } catch (e) {
     fatal('initialisation failed — see console', e);
     return;
+  }
+
+  /* ?net=ws://host:port[&system=N] joins a room instead of flying alone.
+     Failing to connect is not fatal — it drops back to single player with a
+     line in the log, because a dead dev server should not cost you the game. */
+  const netUrl = new URLSearchParams(location.search).get('net');
+  if (netUrl) {
+    status.textContent = 'raising the relay';
+    try {
+      await game.connectNet(netUrl, +(new URLSearchParams(location.search).get('system') || 0));
+    } catch (e) {
+      console.warn('[net]', e);
+      game.hud.log(`RELAY FAILED · ${e.message}`, 'hi');
+    }
   }
 
   status.textContent = 'systems nominal';
