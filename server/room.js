@@ -1,6 +1,7 @@
 import {
   createSimWorld, createShipState, engageFold, dropFold,
   positionSystem, stepShip, createScanState, stepScan,
+  spawnPatrols, stepNpc,
 } from '../src/sim/index.js';
 import { TICK_DT, BTN, encodeShip } from '../src/net/protocol.js';
 import { CANTOS, LOGS } from '../src/game/lore.js';
@@ -156,6 +157,12 @@ export class Room {
     this.resonatorSystems = world.resonatorSystems;
     this.players = new Map();
     this.tick = 0;
+
+    /* Hunters, simulated. Distinct from `Fleet.js` traffic on purpose: that is
+       analytic and client-side and costs the room nothing, while these are
+       stepped and replicated because they have to be able to react. See the
+       header of src/sim/npc.js. */
+    this.npcs = spawnPatrols(this.sys, this.stub, this.bodies, 2);
   }
 
   add(name, profile = null) {
@@ -232,6 +239,13 @@ export class Room {
         { scanRangeMul: p.scanRangeMul, discovered: (id) => this.isDiscovered(p, id) });
       if (done) this.completeScan(p, done);
     }
+
+    /* The hunters, after the pilots. Order matters only in that they chase
+       where a pilot *is* this tick rather than where they were last one — a
+       tick of stale target position is a tick of lead error, and lead error is
+       what a tail chase is made of. */
+    const marks = [...this.players.values()];
+    for (const npc of this.npcs) stepNpc(npc, this.bodies, marks, dt);
   }
 
   isDiscovered(player, id) {
@@ -307,6 +321,13 @@ export class Room {
         }
         : null,
       others,
+      /* Hunters ride the same encoding as pilots — they are ships, and a
+         client that had to know which kind it was drawing before it could
+         place it would be a client with two of everything. `k` is the only
+         thing that differs, and it only picks a hue. */
+      npcs: this.npcs.map((n) => ({
+        ...encodeShip(n.id, n.ship), k: n.kind, f2: n.faction, st: n.ai.state,
+      })),
     };
     if (me) { me.starved = 0; me.dropped = 0; }
     if (me && me.events.length) { out.ev = me.events.slice(); me.events.length = 0; }

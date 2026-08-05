@@ -28,6 +28,11 @@ export {
 } from './targeting.js';
 export { createScanState, stepScan, SCAN_RATE, SCAN_DECAY } from './scan.js';
 export { jumpCost, canJump, payJump } from './jump.js';
+export { steerToward, steerToIntercept, ALIGNED_RAD } from './steer.js';
+export {
+  createNpc, stepNpc, spawnPatrols, resetNpcIds,
+  AGGRO_RANGE, LOSE_RANGE, STANDOFF,
+} from './npc.js';
 export {
   buildSimBodies, createSimWorld, createHostStub,
   resonatorSystemsFor, resonatorIndexFor, placeAnomalies,

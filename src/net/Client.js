@@ -172,6 +172,7 @@ export class NetClient {
         this.stats.lastTick = m.tick;
         if (m.you) this._reconcile(m.you, m.tick);
         this._readRemotes(m);
+        this._readNpcs(m);
         if (m.ev) this.events.push(...m.ev);
         break;
       }
@@ -410,7 +411,11 @@ export class NetClient {
       r.throttle = o.th; r.boost = o.bo; r.foldMode = !!o.f;
       r.seen = true;
     }
-    for (const [id, r] of this.remotes) if (!live.has(id)) r.seen = false;
+    /* Only pilots. Hunters arrive in their own list a few lines later, and
+       clearing them here would set `seen` false and then true again every
+       snapshot — which re-seeds the interpolator's previous sample from its
+       next one on every frame, holding every NPC perfectly still. */
+    for (const [id, r] of this.remotes) if (!r.isNpc && !live.has(id)) r.seen = false;
   }
 
   /**
@@ -430,6 +435,29 @@ export class NetClient {
       const a = span > 1e-6 ? THREE.MathUtils.clamp((target - r.prev.at) / span, 0, 1) : 1;
       r.absPos.lerpVectors(r.prev.pos, r.next.pos, a);
       r.quat.copy(r.prev.quat).slerp(r.next.quat, a);
+    }
+  }
+
+  /* Hunters go through the same buffer-and-interpolate path as pilots, into
+     the same map. They are ships arriving at fifteen a second like everything
+     else, and giving them their own list would mean giving the renderer, the
+     interpolator and the beacon solve a second copy of each. */
+  _readNpcs(m) {
+    if (!m.npcs) return;
+    const now = performance.now() / 1000;
+    for (const o of m.npcs) {
+      const r = this._ensure(o.id);
+      r.isNpc = true;
+      r.npcKind = o.k;
+      r.faction = o.f2;
+      r.aiState = o.st;
+      r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat); r.prev.at = r.next.at;
+      r.next.pos.set(o.p[0], o.p[1], o.p[2]);
+      r.next.quat.set(o.q[0], o.q[1], o.q[2], o.q[3]);
+      r.next.at = now;
+      if (!r.seen) { r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat); r.prev.at = now - TICK_DT; }
+      r.throttle = o.th; r.boost = o.bo; r.foldMode = !!o.f;
+      r.seen = true;
     }
   }
 
