@@ -1,8 +1,11 @@
 import {
   createSimWorld, createShipState, engageFold, dropFold,
-  positionSystem, stepShip,
+  positionSystem, stepShip, createScanState, stepScan,
 } from '../src/sim/index.js';
-import { TICK_DT, encodeShip } from '../src/net/protocol.js';
+import { TICK_DT, BTN, encodeShip } from '../src/net/protocol.js';
+import { CANTOS, LOGS } from '../src/game/lore.js';
+
+const LOG_IDS = LOGS.map((l) => l.id);
 
 /* ============================================================================
    One system, one room, one clock.
@@ -80,6 +83,13 @@ export class Player {
     this.lastSeq = 0;         // last input actually consumed by a tick
     this.seenSeq = 0;         // last input accepted off the wire
     this.events = [];
+
+    // Survey record. Personal, not per body — see the header of src/sim/scan.js.
+    this.scan = createScanState();
+    this.discoveries = new Set();
+    this.cantos = [];
+    this.logsFound = new Set(['log_seeker']);
+    this.scanRangeMul = 1;
     this.primed = false;      // has the jitter cushion filled at least once?
     this.starved = 0;         // ticks with nothing to consume, since last snapshot
     this.dropped = 0;         // inputs discarded because the player ran too far ahead
@@ -125,13 +135,21 @@ export class Player {
 }
 
 export class Room {
-  constructor({ seed, systemId = 0 }) {
+  constructor({ seed, systemId = 0, sharedDiscoveries = false }) {
     this.seed = seed;
     this.systemId = systemId;
-    const world = createSimWorld(seed, systemId);
+    /* Personal by default. Flip this and a system is surveyed once for
+       everybody and its seven Cantos go to whoever gets there first — which is
+       a design position somebody may want, but it is not the default and it is
+       not something to arrive at by accident. */
+    this.sharedDiscoveries = sharedDiscoveries;
+    this.discoveries = new Set();
+
+    const world = createSimWorld(seed, systemId, 14, { logIds: LOG_IDS });
     this.bodies = world.bodies;
     this.stub = world.stub;
     this.sys = world.sys;
+    this.resonatorSystems = world.resonatorSystems;
     this.players = new Map();
     this.tick = 0;
   }
@@ -175,7 +193,52 @@ export class Room {
       stepShip(p.ship, this.bodies, dt,
         { raw: cmd.raw, buttons: cmd.buttons, prevButtons: p.prevButtons }, p.host);
       p.prevButtons = cmd.buttons;
+
+      const done = stepScan(p.scan, p.ship, this.bodies, dt,
+        { aim: cmd.aim, scanning: (cmd.buttons & BTN.SCAN) !== 0 },
+        { scanRangeMul: p.scanRangeMul, discovered: (id) => this.isDiscovered(p, id) });
+      if (done) this.completeScan(p, done);
     }
+  }
+
+  isDiscovered(player, id) {
+    return this.sharedDiscoveries ? this.discoveries.has(id) : player.discoveries.has(id);
+  }
+
+  /**
+   * A body has been surveyed. This is the *decision* half of what used to be
+   * `Game.completeScan`; the sound, the log line, the Canto subtitle and the
+   * cutscene are the client's and are driven by the event pushed here.
+   *
+   * The parts that are not presentation happen on this side because they are
+   * ship state: attuning raises the drive's top speed and refills the fold
+   * charge, and a client predicting against the old numbers would diverge from
+   * the room for as long as it stayed connected.
+   */
+  completeScan(player, body) {
+    if (this.isDiscovered(player, body.id)) return;
+    player.discoveries.add(body.id);
+    if (this.sharedDiscoveries) this.discoveries.add(body.id);
+
+    const ev = { type: 'scanned', id: body.id, name: body.name, kind: body.kind };
+
+    if (body.anomalyType === 'resonator') {
+      const idx = player.cantos.length;
+      if (idx < CANTOS.length) {
+        player.cantos.push(CANTOS[idx].id);
+        player.ship.maxSpeed *= 1.09;
+        player.ship.foldCharge = 1;
+        ev.canto = CANTOS[idx].id;
+        ev.cantoIndex = idx;
+        ev.resonance = player.cantos.length;
+        if (player.cantos.length >= CANTOS.length) ev.aperture = true;
+      }
+    } else if (body.logId) {
+      player.logsFound.add(body.logId);
+      ev.log = body.logId;
+    }
+
+    player.events.push(ev);
   }
 
   /** What a given player is told. `you` is separated so M2 can reconcile it. */
@@ -202,6 +265,9 @@ export class Room {
              orientation out of an integer, got undefined, and filled its ship
              with NaN. One letter, and the whole simulation. */
           st: me.starved, qd: me.queue.length, dr: me.dropped,
+          // the scanner, so the client can draw a bar it does not simulate
+          sp: me.scan.progress, sg: me.scan.targetId, sc: me.scan.scanning ? 1 : 0,
+          res: me.cantos.length,
         }
         : null,
       others,

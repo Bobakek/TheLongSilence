@@ -38,9 +38,10 @@ import {
   applyDriveInput as simApplyDrive, engageFold as simEngageFold, dropFold as simDropFold,
   nearestBodyInfo as simNearestBody, foldFloor as simFoldFloor, foldCeiling as simFoldCeiling,
   canFold as simCanFold, scanRangeFor as simScanRange, inScanRange as simInScanRange,
+  resonatorSystemsFor as simResonatorSystems, resonatorIndexFor as simResonatorIndex,
+  placeAnomalies as simPlaceAnomalies,
 } from '../sim/index.js';
 
-const RESONATOR_COUNT = 7;
 
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
@@ -234,10 +235,7 @@ export class Game {
     this.galaxy = generateGalaxy(this.galaxySeed, 14);
 
     // seven systems hold Resonators; the first is always reachable early
-    const rr = mulberry32(this.galaxySeed ^ 0x9e37);
-    const ids = this.galaxy.map((s) => s.id);
-    for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(rr() * (i + 1)); [ids[i], ids[j]] = [ids[j], ids[i]]; }
-    this.resonatorSystems = new Set([0, ...ids.filter((i) => i !== 0).slice(0, RESONATOR_COUNT - 1)]);
+    this.resonatorSystems = simResonatorSystems(this.galaxySeed, this.galaxy);
 
     await frame();
     P(0.18, 'painting the deep field');
@@ -609,44 +607,25 @@ export class Game {
     if (!initial) this.hud.log(`ARRIVED · ${stub.name}`, 'hi');
   }
 
+  /* Where the anomalies go is `simPlaceAnomalies`; what they look like is here.
+     The split is not cosmetic — the room has to agree with every client about
+     which system holds a Resonator and exactly where it is, or it refuses a
+     Canto the pilot can see on their own screen. So the RNG stream lives in
+     src/sim and this end only builds meshes for what it is handed. */
   _placeAnomalies(sys, stub) {
-    const rnd = mulberry32(stub.seed ^ 0x5eed);
-    const list = [];
+    const placed = simPlaceAnomalies(sys, stub, this.resonatorSystems, LOGS.map((l) => l.id));
 
-    if (this.resonatorSystems.has(stub.id)) {
-      list.push({ type: 'resonator' });
-    }
-    const n = 2 + Math.floor(rnd() * 3);
-    for (let i = 0; i < n; i++) {
-      const r = rnd();
-      list.push({ type: r < 0.34 ? 'derelict' : r < 0.68 ? 'wreck' : 'beacon' });
-    }
-
-    let idx = 0;
-    for (const a of list) {
-      // anchor most anomalies to a planet so they are findable
-      const host = sys.planets[Math.floor(rnd() * sys.planets.length)];
-      const ang = rnd() * Math.PI * 2;
-      const rad = host.radius * (2.4 + rnd() * 4.0);
-      const off = new THREE.Vector3(Math.cos(ang) * rad, (rnd() - 0.5) * rad * 0.7, Math.sin(ang) * rad);
-
-      let obj, scale, name, kind = a.type;
-      if (a.type === 'resonator') {
-        obj = buildResonator(stub.seed + idx, this.nebula.texture);
-        scale = 1.0;
-        name = `RESONATOR ${romanize(this.resonatorIndexFor(stub.id))}`;
-      } else if (a.type === 'derelict') {
-        obj = buildDerelict(stub.seed + idx * 31, this.nebula.texture);
-        scale = 2.6;
-        name = `${stub.name} STATION ${String.fromCharCode(65 + idx)}`;
-      } else if (a.type === 'wreck') {
-        obj = buildWreck(stub.seed + idx * 57);
-        scale = 1.8;
-        name = `WRECKAGE ${stub.designation}-${idx + 1}`;
+    for (let idx = 0; idx < placed.length; idx++) {
+      const body = placed[idx];
+      let obj, scale;
+      if (body.anomalyType === 'resonator') {
+        obj = buildResonator(stub.seed + idx, this.nebula.texture); scale = 1.0;
+      } else if (body.anomalyType === 'derelict') {
+        obj = buildDerelict(stub.seed + idx * 31, this.nebula.texture); scale = 2.6;
+      } else if (body.anomalyType === 'wreck') {
+        obj = buildWreck(stub.seed + idx * 57); scale = 1.8;
       } else {
-        obj = buildBeacon(stub.seed + idx * 91);
-        scale = 1.0;
-        name = `BEACON ${stub.designation}-${idx + 1}`;
+        obj = buildBeacon(stub.seed + idx * 91); scale = 1.0;
       }
       // *Multiply*, never set. Anything built with the greeble kit already
       // carries the metres-to-world-units scale in its root; overwriting it
@@ -654,27 +633,13 @@ export class Game {
       obj.scale.multiplyScalar(scale);
       this.scene.add(obj);
 
-      const body = {
-        kind: 'anomaly', anomalyType: kind, name, obj,
-        // The derelict is no longer a tidy wheel: the hull is warped, three ring
-        // sections tumble clear of it and the debris lens runs to about 1.5.
-        // 0.95 framed the hub and cropped the wreck.
-        radius: kind === 'resonator' ? 3.4 : kind === 'derelict' ? 1.3 : kind === 'wreck' ? 2.2 : 0.6,
-        absPos: new THREE.Vector3(),
-        hostSpec: host, offset: off,
-        id: `anom:${stub.name}:${idx}`,
-        logId: kind === 'wreck' ? LOGS[idx % (LOGS.length - 1)].id : null,
-      };
+      body.obj = obj;
       this.bodies.push(body);
       this.anomalies.push(body);
-      idx++;
     }
   }
 
-  resonatorIndexFor(sysId) {
-    const arr = [...this.resonatorSystems].sort((a, b) => a - b);
-    return arr.indexOf(sysId) + 1;
-  }
+  resonatorIndexFor(sysId) { return simResonatorIndex(this.resonatorSystems, sysId); }
 
   /* ------------------------------------------------------------- updates */
 
@@ -882,7 +847,7 @@ export class Game {
       this.remoteShips?.update(this.net.remotes, this.origin, this.camera,
         (this.engine.height || 1080) * (this.engine.pixelRatio || 1));
       this._drainNetEvents();
-      this.updateScan(dt, uiOpen);
+      this._netScanView();
       this.updatePost(dt);
       this.shake = Math.max(0, this.shake - dt * 1.6);
       this.hud.update(dt);
@@ -2804,7 +2769,18 @@ export class Game {
     // Nothing is copied between a "network ship" and a "render ship" because
     // there is only one of each — see NetClient.attach.
     net.attach(this.bodies, this.ship);
-    this._netSample = net.makeSampler(this.input.state);
+    this._netSample = net.makeSampler(this.input.state, {
+      // The camera, not the hull: free look, the chase view and a cutscene all
+      // move where you are pointing independently of where the nose is.
+      aim: () => this.camAim || this.camQuat,
+      scanning: () => {
+        if (this.starmap.open || this.codex.open) return false;
+        const i = this.input;
+        const held = i.held('scan') || i.touchBtn.has('scan') || i.pressed.has('scanClick');
+        i.pressed.delete('scanClick');
+        return held;
+      },
+    });
 
     this.net = net;
     this.remoteShips = new RemoteShips(this.scene);
@@ -2817,15 +2793,46 @@ export class Game {
     const ev = this.net.events;
     if (!ev.length) return;
     for (const e of ev) {
-      if (e === 'foldOn') { this.hud.setFold(true); this.audio.ping('fold'); }
-      else if (e === 'foldOff') { this.hud.setFold(false); this.audio.ping('unfold'); }
-      else if (e === 'foldRefused:tooDeep') {
+      // The flight events are bare strings from `stepShip`; the survey events
+      // carry a payload. Normalise here rather than making the stepper build
+      // objects it has no use for.
+      const type = typeof e === 'string' ? e : e.type;
+      if (type === 'foldOn') { this.hud.setFold(true); this.audio.ping('fold'); }
+      else if (type === 'foldOff') { this.hud.setFold(false); this.audio.ping('unfold'); }
+      else if (type === 'foldRefused:tooDeep') {
         this.hud.log('FOLD BLOCKED · TOO DEEP IN MASS', 'hi'); this.audio.ping('deny');
-      } else if (e === 'foldRefused:noCharge') {
+      } else if (type === 'foldRefused:noCharge') {
         this.hud.log('FOLD CHARGE INSUFFICIENT', 'hi');
+      } else if (type === 'scanned') {
+        // Mirror the room's record so the archive and the target list agree
+        // with it, then play the reaction. The decision was not ours.
+        this.discoveries.add(e.id);
+        const b = this.bodies.find((x) => x.id === e.id);
+        if (b) b.scanned = true;
+        if (e.canto) { this.cantos.push(e.canto); this.state.resonance = e.resonance; }
+        if (e.log) this.logsFound.add(e.log);
+        this.onScanned(e, b);
       }
     }
     ev.length = 0;
+  }
+
+  /**
+   * What the HUD shows about the scanner when the room owns it.
+   *
+   * Not a simulation: the bar, the reticle arc and the target name are read
+   * straight off the last snapshot. Scanning changes nothing about where the
+   * ship goes, so there is nothing here worth predicting — and a predicted bar
+   * that filled locally and then had to be un-filled when the server disagreed
+   * would be worse than one that is a fraction of a second behind.
+   */
+  _netScanView() {
+    const s = this.net.scan;
+    this.scanProgress = s.progress;
+    const t = s.targetId ? this.bodies.find((b) => b.id === s.targetId) : null;
+    this.aimed = t;
+    if (t) this.target = t;
+    this.scanTarget = s.scanning ? t : null;
   }
 
   /* ------------------------------------------------------------ targeting */
@@ -2888,29 +2895,60 @@ export class Game {
 
   completeScan(b) {
     if (b.scanned) return;
+    /* Decide, then react. Alone, this end does both; in a room the decision has
+       already been taken by the server and only `onScanned` runs. Keeping them
+       apart is what stops a client from awarding itself a Canto, and it is why
+       the state changes that are not presentation — the drive's top speed, the
+       fold charge — live in the branch below rather than in the reaction. */
     b.scanned = true;
     this.discoveries.add(b.id);
-    this.audio.ping('scan');
 
+    const result = { id: b.id, name: b.name, kind: b.kind };
     if (b.kind === 'anomaly' && b.anomalyType === 'resonator') {
       const idx = this.cantos.length;
       if (idx < CANTOS.length) {
         this.cantos.push(CANTOS[idx].id);
         this.state.resonance = this.cantos.length;
-        const seq = SEQUENCES.attune(this, b);
-        this.director.play('attune:' + b.id, seq.shots, { title: seq.title, sub: seq.sub });
-        this.hud.narrate(CANTOS[idx].q, 'RESONATOR');
-        this.hud.log(`ATTUNED · ${CANTOS[idx].title}`, 'hi');
-        this.audio.ping('resonate');
         this.ship.maxSpeed *= 1.09;
         this.ship.foldCharge = 1;
-        if (this.cantos.length >= CANTOS.length) this.onAperture();
+        result.canto = CANTOS[idx].id;
+        result.cantoIndex = idx;
+        result.resonance = this.cantos.length;
+        if (this.cantos.length >= CANTOS.length) result.aperture = true;
       }
     } else if (b.kind === 'anomaly' && b.logId) {
       this.logsFound.add(b.logId);
-      this.hud.log(`LOG RECOVERED · ${b.name}`, 'ok');
+      result.log = b.logId;
+    }
+    this.onScanned(result, b);
+  }
+
+  /**
+   * Everything a completed scan *sounds and looks* like.
+   *
+   * Driven either by the local decision above or by the room's `scanned`
+   * event. It touches no state the simulation cares about, which is the whole
+   * point of the split: a client may be told what happened, and may then make
+   * as much noise about it as it likes.
+   */
+  onScanned(result, body = null) {
+    const b = body || this.bodies.find((x) => x.id === result.id);
+    this.audio.ping('scan');
+
+    if (result.canto !== undefined && result.cantoIndex !== undefined) {
+      const canto = CANTOS[result.cantoIndex];
+      if (b) {
+        const seq = SEQUENCES.attune(this, b);
+        this.director.play('attune:' + result.id, seq.shots, { title: seq.title, sub: seq.sub });
+      }
+      this.hud.narrate(canto.q, 'RESONATOR');
+      this.hud.log(`ATTUNED · ${canto.title}`, 'hi');
+      this.audio.ping('resonate');
+      if (result.aperture) this.onAperture();
+    } else if (result.log) {
+      this.hud.log(`LOG RECOVERED · ${result.name}`, 'ok');
     } else {
-      this.hud.log(`SCANNED · ${b.name}`, 'ok');
+      this.hud.log(`SCANNED · ${result.name}`, 'ok');
     }
     this.hud.refreshTargets();
     this.codex.markDirty();
@@ -3529,4 +3567,3 @@ export class Game {
 
 function frame() { return new Promise((r) => requestAnimationFrame(() => r())); }
 function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
-function romanize(n) { return ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII'][n] || String(n); }

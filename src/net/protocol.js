@@ -33,6 +33,7 @@ export const BTN = {
   FOLD: 1 << 0,
   BOOST: 1 << 1,
   STOP: 1 << 2,
+  SCAN: 1 << 3,          // held, not tapped
 };
 
 /* ------------------------------------------------------------------ client */
@@ -48,13 +49,20 @@ export function emptyInput() {
   return { pitch: 0, yaw: 0, roll: 0, strafeX: 0, strafeY: 0, throttleDelta: 0, boost: 0 };
 }
 
-export function encodeInput(seq, raw, buttons) {
-  return JSON.stringify({
+export function encodeInput(seq, raw, buttons, aim) {
+  const m = {
     t: C.INPUT, seq,
     p: r4(raw.pitch), y: r4(raw.yaw), r: r4(raw.roll),
     sx: r4(raw.strafeX), sy: r4(raw.strafeY),
     td: r4(raw.throttleDelta), b: buttons | 0,
-  });
+  };
+  /* Where the pilot is looking, which is not where the ship is pointing —
+     `Game.aimTarget` reads the camera, and free-look, the chase camera and a
+     cutscene all move it independently of the hull. The server cannot check
+     this against anything; what it can do is resolve the target from it by the
+     same rules, so a client cannot name a body it is not pointing at. */
+  if (aim) m.a = [r5(aim.x), r5(aim.y), r5(aim.z), r5(aim.w)];
+  return JSON.stringify(m);
 }
 
 /**
@@ -96,7 +104,18 @@ export function decodeInput(m) {
       boost: (m.b & BTN.BOOST) ? 1 : 0,
     },
     buttons: m.b | 0,
+    // Normalised on arrival: a client is free to send nonsense, and an
+    // un-normalised quaternion would quietly skew every dot product in
+    // aimTargetFrom rather than failing.
+    aim: Array.isArray(m.a) && m.a.length === 4 ? normQuat(m.a) : null,
   };
+}
+
+function normQuat(a) {
+  const [x, y, z, w] = a.map((n) => (Number.isFinite(n) ? n : 0));
+  const l = Math.hypot(x, y, z, w);
+  if (!(l > 1e-6)) return { x: 0, y: 0, z: 0, w: 1 };
+  return { x: x / l, y: y / l, z: z / l, w: w / l };
 }
 
 /* ------------------------------------------------------------------ server */
@@ -154,7 +173,18 @@ export function encodeShip(id, s) {
     f: s.foldMode ? 1 : 0,
     hl: r4(s.hull),
     fc: s.foldCharge,
+    /* The upgrade-mutable parameters.
+       They change rarely — an attuned Resonator raises maxSpeed by 9% — but
+       `stepFlight` reads every one of them, so a client predicting with a stale
+       set is predicting a different ship. Sending them only on change would be
+       cheaper and would mean a client that missed one packet drifts until it
+       reconnects. Eight numbers is not the problem worth solving here. */
+    ms: s.maxSpeed, sr: s.scanRate, fr: s.foldRegen,
   };
 }
 function r4(n) { return Math.round(n * 1e4) / 1e4; }
+/* The aim may be rounded — nothing integrates from it. It picks a target by a
+   dot-product threshold of 0.955, and 1e-5 of slop cannot move that decision
+   across a body boundary at any range that matters. */
+function r5(n) { return Math.round(n * 1e5) / 1e5; }
 function clamp1(n) { return Number.isFinite(n) ? Math.max(-1, Math.min(1, n)) : 0; }

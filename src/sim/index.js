@@ -24,6 +24,11 @@ export { stepShip, createQuietHost, CMD } from './step.js';
 export { applyProximity } from './proximity.js';
 export {
   isMassive, nearestBodyInfo, foldFloor, foldCeiling, canFold,
-  scanRangeFor, inScanRange,
+  scanRangeFor, inScanRange, aimTargetFrom,
 } from './targeting.js';
-export { buildSimBodies, createSimWorld, createHostStub } from './world.js';
+export { createScanState, stepScan, SCAN_RATE, SCAN_DECAY } from './scan.js';
+export {
+  buildSimBodies, createSimWorld, createHostStub,
+  resonatorSystemsFor, resonatorIndexFor, placeAnomalies,
+  ANOMALY_RADIUS, RESONATOR_COUNT,
+} from './world.js';

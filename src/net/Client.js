@@ -71,6 +71,8 @@ export class NetClient {
 
     this.remotes = new Map();
     this.events = [];
+    this.scan = { progress: 0, targetId: null, scanning: false };
+    this.resonance = 0;
 
     this.seq = 0;
     this._acc = 0;
@@ -200,7 +202,7 @@ export class NetClient {
       this.pending.push({ seq, raw: { ...raw }, buttons, pos: this.ship.absPos.clone() });
       if (this.pending.length > 120) this.pending.shift();   // ~4s; the link is gone
 
-      this.ws.send(encodeInput(seq, raw, buttons));
+      this.ws.send(encodeInput(seq, raw, buttons, sampled.aim));
       this.stats.sent++;
       this._buttons = 0;      // taps are consumed by the send
 
@@ -254,6 +256,17 @@ export class NetClient {
     if (you.av) this.ship.angVel.set(you.av[0], you.av[1], you.av[2]);
     if (you.fs !== undefined) this.ship.foldSpeed = you.fs;
     if (you.ht !== undefined) this.ship.heat = you.ht;
+    // The upgrade-mutable parameters. An attuned Resonator raises maxSpeed on
+    // the server; without this the client keeps predicting the old ship.
+    if (you.ms !== undefined) this.ship.maxSpeed = you.ms;
+    if (you.sr !== undefined) this.ship.scanRate = you.sr;
+    if (you.fr !== undefined) this.ship.foldRegen = you.fr;
+    // The scanner is not predicted — it changes nothing about where the ship
+    // goes — so it is simply reported, and the HUD draws what the room says.
+    this.scan.progress = you.sp || 0;
+    this.scan.targetId = you.sg || null;
+    this.scan.scanning = !!you.sc;
+    this.resonance = you.res || 0;
     this.ship.throttle = you.th; this.ship.boost = you.bo;
     this.ship.foldMode = !!you.f; this.ship.hull = you.hl; this.ship.foldCharge = you.fc;
     this.authoritative = you;
@@ -390,7 +403,8 @@ export class NetClient {
    * one it happens to have locally. Getting that wrong is a divergence that
    * only appears while the boost is held, which is the worst kind.
    */
-  makeSampler(state) {
+  makeSampler(state, extra = {}) {
+    const { aim = null, scanning = null } = extra;
     return () => ({
       raw: {
         pitch: state.pitch, yaw: state.yaw, roll: state.roll,
@@ -398,7 +412,13 @@ export class NetClient {
         throttleDelta: state.throttleDelta,
         boost: state.boost ? 1 : 0,
       },
-      buttons: this.takeButtons() | (state.boost ? BTN.BOOST : 0),
+      // Held states are re-derived every sample rather than banked. `setButtons`
+      // is for taps and clears itself on send; a scan key that did that would
+      // reach the room for exactly one tick of a two-second hold.
+      buttons: this.takeButtons()
+        | (state.boost ? BTN.BOOST : 0)
+        | (scanning && scanning() ? BTN.SCAN : 0),
+      aim: aim ? aim() : null,
     });
   }
 

@@ -55,6 +55,36 @@ export function canFold(ship, near) {
   return null;
 }
 
+const _fwd = new THREE.Vector3();
+const _to = new THREE.Vector3();
+
+/**
+ * The body closest to the reticle, weighted by angular size.
+ *
+ * Lifted out of `Game.aimTarget`, which read the *camera's* orientation — and
+ * the server has no camera. So the aim arrives on the wire as a quaternion and
+ * is resolved here, by the same scoring, on both sides. The server cannot
+ * verify where a pilot is really looking; what it can do is refuse to scan
+ * anything that quaternion does not actually point at, which is the difference
+ * between a client that reports a discovery and a client that requests one.
+ */
+export function aimTargetFrom(ship, bodies, aimQuat) {
+  _fwd.set(0, 0, -1).applyQuaternion(aimQuat);
+  let best = null, bestScore = 0;
+  for (const b of bodies) {
+    _to.copy(b.absPos).sub(ship.absPos);
+    const d = _to.length();
+    if (d < 1e-6) continue;
+    _to.multiplyScalar(1 / d);
+    const dot = _to.dot(_fwd);
+    if (dot < 0.955) continue;
+    const ang = Math.atan2(b.radius, d);
+    const score = (dot - 0.955) * 40 + Math.min(ang * 6, 3);
+    if (score > bestScore) { bestScore = score; best = b; }
+  }
+  return best;
+}
+
 export function scanRangeFor(b, mul = 1) {
   if (b.kind === 'anomaly') return 40 * mul;
   if (b.kind === 'star') return b.radius * 26 * mul;
