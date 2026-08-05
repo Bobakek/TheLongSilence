@@ -51,7 +51,7 @@ export function emptyInput() {
   return { pitch: 0, yaw: 0, roll: 0, strafeX: 0, strafeY: 0, throttleDelta: 0, boost: 0 };
 }
 
-export function encodeInput(seq, raw, buttons, aim) {
+export function encodeInput(seq, raw, buttons, aim, renderTick) {
   const m = {
     t: C.INPUT, seq,
     p: r4(raw.pitch), y: r4(raw.yaw), r: r4(raw.roll),
@@ -64,6 +64,12 @@ export function encodeInput(seq, raw, buttons, aim) {
      this against anything; what it can do is resolve the target from it by the
      same rules, so a client cannot name a body it is not pointing at. */
   if (aim) m.a = [r5(aim.x), r5(aim.y), r5(aim.z), r5(aim.w)];
+  /* The server tick this client was actually *looking at* when it made this
+     input — not the tick it is predicting, which is ahead of the room, but the
+     one its interpolator had the other ships drawn at, which is behind it. Lag
+     compensation is entirely built on this number. It is clamped server-side,
+     because it is a client's claim about what it could see. */
+  if (Number.isFinite(renderTick)) m.rt = Math.round(renderTick * 10) / 10;
   return JSON.stringify(m);
 }
 
@@ -110,6 +116,7 @@ export function decodeInput(m) {
     // un-normalised quaternion would quietly skew every dot product in
     // aimTargetFrom rather than failing.
     aim: Array.isArray(m.a) && m.a.length === 4 ? normQuat(m.a) : null,
+    renderTick: Number.isFinite(m.rt) ? m.rt : null,
   };
 }
 

@@ -108,6 +108,10 @@ export function fire(s, ownerId, dir, now) {
     born: now,
     ttl: BOLT_TTL,
     damage: BOLT_DAMAGE,
+    /* How far behind the present this bolt resolves, in ticks. Set by the
+       room from the shooter's own report of what it was looking at; see
+       Room.rewindFor. Zero for anything the server fires itself. */
+    rewind: 0,
   };
 }
 
@@ -157,7 +161,7 @@ export function stepCombatState(s, dt, now) {
  * against a heightfield per bolt per tick, and nothing in this game is close
  * enough to a surface for it to read.
  */
-export function stepProjectiles(bolts, targets, dt, now) {
+export function stepProjectiles(bolts, targetsFor, dt, now) {
   const alive = [];
   const hits = [];
 
@@ -167,11 +171,19 @@ export function stepProjectiles(bolts, targets, dt, now) {
     _p0.copy(b.pos);
     _p1.copy(b.vel).multiplyScalar(dt).add(b.pos);
 
+    /* Where the targets were, from this bolt's point of view.
+       `targetsFor` hands back records of `{ id, ship, hitPos }` — `hitPos` is
+       the position to test against and `ship` is the live object to damage.
+       They are not the same thing under lag compensation: a bolt is resolved
+       against the world its shooter could see, and the damage lands on the
+       ship as it is now. */
+    const targets = typeof targetsFor === 'function' ? targetsFor(b) : targetsFor;
+
     let bestT = Infinity, victim = null;
     for (const t of targets) {
       if (t.id === b.owner) continue;            // never your own bolt
       if (t.ship.hull <= 0) continue;
-      const f = segmentHitsSphere(_p0, _p1, t.ship.absPos, HIT_RADIUS);
+      const f = segmentHitsSphere(_p0, _p1, t.hitPos || t.ship.absPos, HIT_RADIUS);
       // Nearest along the flight path wins, so a line of ships is hit in order.
       if (f >= 0 && f < bestT) { bestT = f; victim = t; }
     }

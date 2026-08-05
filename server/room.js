@@ -14,6 +14,7 @@ const MAX_BOLTS = 400;
 import { TICK_DT, BTN, encodeShip, encodeBolt } from '../src/net/protocol.js';
 import { CANTOS, LOGS } from '../src/game/lore.js';
 import { applyProfile } from './profiles.js';
+import { History } from './history.js';
 
 const LOG_IDS = LOGS.map((l) => l.id);
 
@@ -101,6 +102,7 @@ export class Player {
     this.logsFound = new Set(['log_seeker']);
     this.scanRangeMul = 1;
     this.primed = false;      // has the jitter cushion filled at least once?
+    this.renderTick = null;   // the room tick this client says it can see
     this.starved = 0;         // ticks with nothing to consume, since last snapshot
     this.dropped = 0;         // inputs discarded because the player ran too far ahead
     this.host = new PlayerHost(this);
@@ -173,6 +175,7 @@ export class Room {
     this.npcs = spawnPatrols(this.sys, this.stub, this.bodies, 2);
     this.bolts = [];
     this.now = 0;             // room seconds, the clock every weapon runs on
+    this.history = new History();
   }
 
   add(name, profile = null) {
@@ -256,6 +259,8 @@ export class Room {
       // because gunnery runs after every ship has moved, and firing from where
       // the hull was at the start of the tick would put the muzzle behind it.
       p.firing = (cmd.buttons & BTN.FIRE) !== 0;
+      // What this client claims it was looking at. Clamped when it is used.
+      if (cmd.renderTick !== null && cmd.renderTick !== undefined) p.renderTick = cmd.renderTick;
 
       const done = stepScan(p.scan, p.ship, this.bodies, dt,
         { aim: cmd.aim, scanning: (cmd.buttons & BTN.SCAN) !== 0 },
@@ -279,6 +284,10 @@ export class Room {
     const all = this.combatants();
     for (const c of all) stepCombatState(c.ship, dt, this.now);
 
+    /* Record where everyone is, before anything is fired at them. This is the
+       whole basis of lag compensation — see server/history.js. */
+    this.history.record(this.tick, all);
+
     // ---- pilots pull the trigger
     for (const p of this.players.values()) {
       if (!p.firing) continue;
@@ -288,7 +297,16 @@ export class Room {
          the pilot is looking, and a gun bolted to the nose does not care —
          letting it fire down the camera axis would mean shooting round
          corners in the chase view. */
-      this.bolts.push(fire(p.ship, `p:${p.id}`, aimForward(p.ship, _fireDir), this.now));
+      const bolt = fire(p.ship, `p:${p.id}`, aimForward(p.ship, _fireDir), this.now);
+      /* The bolt carries the shooter's view offset for its whole flight, not
+         just for the tick it was born on. A projectile does not hit at spawn —
+         it takes a third of a second to cross two hundred units — so rewinding
+         only the muzzle moment would compensate nothing at all. Carrying the
+         offset makes the shot coherent from the shooter's side: they aimed at
+         a ghost, the bolt flies at that ghost, and the ghost moves exactly as
+         the real ship did. See server/history.js for what this costs. */
+      bolt.rewind = this.history.rewindTicks(this.tick, p.renderTick);
+      this.bolts.push(bolt);
       p.events.push({ type: 'fired' });
     }
 
@@ -300,8 +318,15 @@ export class Room {
       this.bolts.push(fire(n.ship, n.id, aimForward(n.ship, _fireDir), this.now));
     }
 
-    // ---- and the bolts resolve
-    const { alive, hits } = stepProjectiles(this.bolts, all, dt, this.now);
+    /* ---- and the bolts resolve, each against the world its shooter saw.
+       `hitPos` is what the segment is tested against; `ship` is what takes the
+       damage. Under rewind those are different things, which is the point. */
+    const targetsFor = (b) => {
+      if (!b.rewind) return all;
+      const at = this.tick - b.rewind;
+      return all.map((c) => ({ id: c.id, ship: c.ship, hitPos: this.history.posAt(at, c.id) || c.ship.absPos }));
+    };
+    const { alive, hits } = stepProjectiles(this.bolts, targetsFor, dt, this.now);
     this.bolts = alive;
 
     for (const h of hits) {

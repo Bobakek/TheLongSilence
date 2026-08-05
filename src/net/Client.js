@@ -75,6 +75,9 @@ export class NetClient {
     this.scan = { progress: 0, targetId: null, scanning: false };
     this.resonance = 0;
     this.bolts = [];
+    // The room tick our remotes are drawn at; see interpolate(). Sent with
+    // every input so the server can judge our shots against what we could see.
+    this.renderTick = null;
 
     this.seq = 0;
     this._acc = 0;
@@ -258,7 +261,7 @@ export class NetClient {
       this.pending.push({ seq, raw: { ...raw }, buttons, pos: this.ship.absPos.clone() });
       if (this.pending.length > 120) this.pending.shift();   // ~4s; the link is gone
 
-      this.ws.send(encodeInput(seq, raw, buttons, sampled.aim));
+      this.ws.send(encodeInput(seq, raw, buttons, sampled.aim, this.renderTick));
       this.stats.sent++;
       this._buttons = 0;      // taps are consumed by the send
 
@@ -409,11 +412,15 @@ export class NetClient {
       const r = this._ensure(o.id);
       // Keep two samples and draw between them: a snapshot every 66 ms drawn
       // raw is a ship that teleports fifteen times a second.
-      r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat); r.prev.at = r.next.at;
+      r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat);
+      r.prev.at = r.next.at; r.prev.tick = r.next.tick;
       r.next.pos.set(o.p[0], o.p[1], o.p[2]);
       r.next.quat.set(o.q[0], o.q[1], o.q[2], o.q[3]);
-      r.next.at = now;
-      if (!r.seen) { r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat); r.prev.at = now - TICK_DT; }
+      r.next.at = now; r.next.tick = m.tick;
+      if (!r.seen) {
+        r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat);
+        r.prev.at = now - TICK_DT; r.prev.tick = m.tick - 1;
+      }
       r.throttle = o.th; r.boost = o.bo; r.foldMode = !!o.f;
       r.seen = true;
     }
@@ -435,13 +442,23 @@ export class NetClient {
    */
   interpolate() {
     const target = performance.now() / 1000 - INTERP_DELAY;
+    let seenTick = null;
     for (const r of this.remotes.values()) {
       if (!r.seen) continue;
       const span = r.next.at - r.prev.at;
       const a = span > 1e-6 ? THREE.MathUtils.clamp((target - r.prev.at) / span, 0, 1) : 1;
       r.absPos.lerpVectors(r.prev.pos, r.next.pos, a);
       r.quat.copy(r.prev.quat).slerp(r.next.quat, a);
+      /* The room tick these ships are actually drawn at. Every remote is on
+         the same pair of snapshots, so one of them speaks for all — and this
+         is the number the server needs to rewind to when this client shoots.
+         It is *behind* `this.tick`, which is the prediction and runs ahead. */
+      if (seenTick === null) seenTick = r.prev.tick + (r.next.tick - r.prev.tick) * a;
     }
+    /* With nobody else in sight there is nothing being interpolated, so the
+       best available answer is the last snapshot we were given. A shot fired
+       then has nothing to rewind against anyway. */
+    this.renderTick = seenTick !== null ? seenTick : this.stats.lastTick;
   }
 
   /* Hunters go through the same buffer-and-interpolate path as pilots, into
@@ -457,11 +474,15 @@ export class NetClient {
       r.npcKind = o.k;
       r.faction = o.f2;
       r.aiState = o.st;
-      r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat); r.prev.at = r.next.at;
+      r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat);
+      r.prev.at = r.next.at; r.prev.tick = r.next.tick;
       r.next.pos.set(o.p[0], o.p[1], o.p[2]);
       r.next.quat.set(o.q[0], o.q[1], o.q[2], o.q[3]);
-      r.next.at = now;
-      if (!r.seen) { r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat); r.prev.at = now - TICK_DT; }
+      r.next.at = now; r.next.tick = m.tick;
+      if (!r.seen) {
+        r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat);
+        r.prev.at = now - TICK_DT; r.prev.tick = m.tick - 1;
+      }
       r.throttle = o.th; r.boost = o.bo; r.foldMode = !!o.f;
       r.seen = true;
     }
@@ -474,8 +495,8 @@ export class NetClient {
         id, name: `PILOT-${id}`, seen: false,
         absPos: new THREE.Vector3(), quat: new THREE.Quaternion(),
         throttle: 0, boost: 0, foldMode: false,
-        prev: { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), at: 0 },
-        next: { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), at: 0 },
+        prev: { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), at: 0, tick: 0 },
+        next: { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), at: 0, tick: 0 },
       };
       this.remotes.set(id, r);
     }
