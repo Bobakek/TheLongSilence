@@ -50,10 +50,11 @@ import {
 const INTERP_DELAY = (SNAPSHOT_EVERY / TICK_HZ) * 2;   // two snapshot intervals
 
 export class NetClient {
-  constructor(url, { system = 0, name = null } = {}) {
+  constructor(url, { system = 0, name = null, key = undefined } = {}) {
     this.url = url;
     this.system = system;
     this.name = name;
+    this.key = key === undefined ? NetClient.pilotKey() : key;
     this.id = null;
     this.connected = false;
     this.welcome = null;
@@ -111,9 +112,35 @@ export class NetClient {
     if (this.welcome) seekSystem(this.bodies, this.tick * TICK_DT);
   }
 
+  /**
+   * The key that says which profile is ours.
+   *
+   * Generated once and kept in localStorage. This identifies a pilot; it does
+   * not authenticate one — anyone holding the string is that pilot. That is
+   * the honest shape of a development server with no accounts, and saying so
+   * here is cheaper than someone later assuming otherwise. When there are real
+   * accounts, this is the one line that changes.
+   */
+  static pilotKey() {
+    try {
+      const KEY = 'ls.pilotKey';
+      let k = localStorage.getItem(KEY);
+      if (!k) {
+        k = (globalThis.crypto?.randomUUID?.()
+          || Array.from({ length: 4 }, () => Math.random().toString(36).slice(2)).join(''));
+        localStorage.setItem(KEY, k);
+      }
+      return k;
+    } catch {
+      // private mode, a sandboxed frame, or Node: play without a profile
+      return null;
+    }
+  }
+
   connect() {
     const q = new URLSearchParams({ system: String(this.system) });
     if (this.name) q.set('name', this.name);
+    if (this.key) q.set('key', this.key);
     const ws = this.ws = new WebSocket(`${this.url}/?${q}`);
 
     ws.onopen = () => { this.connected = true; };

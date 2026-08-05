@@ -2766,6 +2766,20 @@ export class Game {
     }
     if (net.welcome.system !== this.currentSystemId) await this.loadSystem(net.welcome.system, true);
 
+    /* Take the archive back from the room.
+       A returning pilot's discoveries, Cantos and recovered logs are theirs,
+       and rebuilding the codex from an empty set every session would quietly
+       undo the whole point of storing them. The bodies already carry their
+       `scanned` flag from this, so the target list reads right too. */
+    const mine = net.welcome.you || {};
+    this.discoveries = new Set(mine.discoveries || []);
+    this.cantos = [...(mine.cantos || [])];
+    this.logsFound = new Set(mine.logsFound || ['log_seeker']);
+    this.state.resonance = this.cantos.length;
+    for (const b of this.bodies) if (this.discoveries.has(b.id)) b.scanned = true;
+    this.codex.markDirty();
+    this.hud.refreshTargets();
+
     // Prediction runs on this game's own ship and this game's own bodies.
     // Nothing is copied between a "network ship" and a "render ship" because
     // there is only one of each — see NetClient.attach.
@@ -2792,6 +2806,10 @@ export class Game {
     this.net = net;
     this.remoteShips = new RemoteShips(this.scene);
     this.hud.log(`ROOM · ${this.system.star.name.toUpperCase()} · PILOT ${net.id}`, 'ok');
+    if (mine.returning) {
+      this.hud.log(`ARCHIVE RESTORED · ${this.discoveries.size} SURVEYED · `
+        + `${this.cantos.length}/7 CANTOS`, 'ok');
+    }
     return net;
   }
 

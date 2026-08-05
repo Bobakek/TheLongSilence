@@ -4,6 +4,7 @@ import {
 } from '../src/sim/index.js';
 import { TICK_DT, BTN, encodeShip } from '../src/net/protocol.js';
 import { CANTOS, LOGS } from '../src/game/lore.js';
+import { applyProfile } from './profiles.js';
 
 const LOG_IDS = LOGS.map((l) => l.id);
 
@@ -157,8 +158,9 @@ export class Room {
     this.tick = 0;
   }
 
-  add(name) {
+  add(name, profile = null) {
     const p = new Player(name);
+    if (profile) applyProfile(p, profile);
     this.spawn(p);
     this.players.set(p.id, p);
     return p;
@@ -269,6 +271,9 @@ export class Room {
       ev.log = body.logId;
     }
 
+    // Something worth keeping happened. The room has no store of its own —
+    // it should not — so it raises a flag the host loop drains.
+    player.progressDirty = true;
     player.events.push(ev);
   }
 

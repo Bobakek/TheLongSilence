@@ -11,3 +11,6 @@ CLAUDE.md
 
 # M0 determinism artefact
 node-trace.json
+
+# M4 pilot profiles — local server state, not source
+.data/

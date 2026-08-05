@@ -14,6 +14,7 @@
 
 import { WebSocketServer } from 'ws';
 import { Room } from './room.js';
+import { ProfileStore, captureProfile } from './profiles.js';
 import { C, S, TICK_HZ, TICK_DT, SNAPSHOT_EVERY, PROTOCOL_VERSION, decodeInput } from '../src/net/protocol.js';
 import { canJump, payJump } from '../src/sim/index.js';
 
@@ -32,6 +33,20 @@ const SEED = +arg('--seed', 20260725);
    nothing: prediction that only works at zero latency is not prediction. */
 const LAG_MS = +arg('--lag', 0);
 
+const profiles = new ProfileStore(arg('--profiles', '.data/pilots.json'));
+
+/* ------------------------------------------------------------- abuse limits
+
+   Not security — there is no authentication here and a determined client can
+   still fly a modified game. These are the cheap floors that stop one socket
+   from costing the room everything: an oversized frame, a flood of packets, or
+   a name long enough to be a payload in its own right. Input *values* are
+   already clamped in `decodeInput`, which is the other half of the same idea. */
+const MAX_MESSAGE_BYTES = 4096;
+const MAX_MSG_PER_SEC = 120;          // the client sends 30 inputs/s plus a ping
+const MAX_NAME = 24;
+const MAX_KEY = 128;
+
 const rooms = new Map();
 function roomFor(systemId) {
   if (!rooms.has(systemId)) {
@@ -49,12 +64,35 @@ console.log(`ws://localhost:${PORT}  seed ${SEED}  tick ${TICK_HZ}Hz  snapshot $
 
 wss.on('connection', (sock, req) => {
   const url = new URL(req.url, 'http://x');
-  const systemId = Math.max(0, Math.min(13, +(url.searchParams.get('system') || 0) | 0));
+  // Length-capped and stripped of control characters — the latter because a
+  // name is echoed to every other client and printed in the room log, and a
+  // carriage return in a log line is how one pilot forges another arrival.
+  const CTRL = /[\u0000-\u001f\u007f]/g;
+  const clean = (s, max) => (typeof s === 'string'
+    ? (s.slice(0, max).replace(CTRL, '') || null)
+    : null);
+
+  /* The pilot key identifies a profile. It does NOT authenticate one: whoever
+     holds it is that pilot. Written down here as well as in profiles.js
+     because it is exactly the sort of thing that gets mistaken for a login
+     later. It is also a client-supplied string, so it is length-capped before
+     it is used as a map key and never touches a filesystem path. */
+  const pilotKey = clean(url.searchParams.get('key'), MAX_KEY);
+  const name = clean(url.searchParams.get('name'), MAX_NAME);
+
+  const profile = pilotKey ? profiles.get(pilotKey, name, Date.now()) : null;
+  // Resume where they left off, unless the URL asks for somewhere specific.
+  const asked = url.searchParams.get('system');
+  const wanted = asked !== null ? +asked | 0 : (profile ? profile.system | 0 : 0);
+  const systemId = Math.max(0, Math.min(13, wanted));
+
   const room = roomFor(systemId);
-  const player = room.add(url.searchParams.get('name'));
+  const player = room.add(name, profile);
 
   sock.playerId = player.id;
   sock.room = room;
+  sock.pilotKey = pilotKey;
+  sock.msgWindow = { at: 0, n: 0 };
 
   send(sock, {
     t: S.WELCOME, v: PROTOCOL_VERSION,
@@ -63,13 +101,36 @@ wss.on('connection', (sock, req) => {
     // planets start at phase zero while everyone else's are hours along.
     tick: room.tick,
     tickHz: TICK_HZ, snapshotEvery: SNAPSHOT_EVERY,
-    you: { name: player.name },
+    you: {
+      name: player.name,
+      // What the archive should already show. A returning pilot's codex is
+      // theirs, and rebuilding it from scratch every session would quietly
+      // undo the whole point of the store.
+      discoveries: [...player.discoveries],
+      cantos: [...player.cantos],
+      logsFound: [...player.logsFound],
+      returning: !!(profile && profile.discoveries?.length),
+    },
     players: [...room.players.values()].map((p) => ({ id: p.id, name: p.name })),
   });
   broadcast(room, { t: S.JOIN, id: player.id, name: player.name }, player.id);
   console.log(`[room ${systemId}] + ${player.name} (${room.players.size} aboard)`);
 
   sock.on('message', (data) => {
+    /* An oversized frame is refused before it is parsed: JSON.parse on a
+       megabyte of nesting is the cheapest denial of service there is, and the
+       largest thing a legitimate client sends is a couple of hundred bytes. */
+    if (data.length > MAX_MESSAGE_BYTES) { sock.close(1009, 'message too large'); return; }
+
+    /* A packet flood is dropped rather than queued. The client sends thirty
+       inputs a second and a ping every second; the ceiling is four times that,
+       so ordinary jitter never trips it and a runaway loop always does. The
+       window is deliberately coarse — this is a floor, not a shaper. */
+    const now = Date.now();
+    const w = sock.msgWindow;
+    if (now - w.at >= 1000) { w.at = now; w.n = 0; }
+    if (++w.n > MAX_MSG_PER_SEC) return;
+
     let m;
     // A client that sends rubbish gets ignored, not a crashed room.
     try { m = JSON.parse(data); } catch { return; }
@@ -103,6 +164,9 @@ wss.on('connection', (sock, req) => {
      see and nobody could remove. */
   const bye = () => {
     const here = sock.room || room;
+    // Save before the pilot leaves the room, while the Player still holds
+    // everything they earned and we still know which system they were in.
+    saveProfile(sock, here, player);
     here.remove(player.id);
     broadcast(here, { t: S.LEAVE, id: player.id });
     console.log(`[room ${here.systemId}] - ${player.name} (${here.players.size} aboard)`);
@@ -135,6 +199,9 @@ function jump(sock, targetId) {
 
   const cost = payJump(player.ship, from.galaxy, from.systemId, targetId);
   const to = roomFor(targetId);
+  // Arriving somewhere new is worth recording: a pilot who drops mid-fold
+  // should come back where they landed, not where they set off from.
+  saveProfile(sock, to, player);
 
   from.remove(player.id);
   broadcast(from, { t: S.LEAVE, id: player.id });
@@ -155,6 +222,12 @@ function jump(sock, targetId) {
     players: [...to.players.values()].map((p) => ({ id: p.id, name: p.name })),
   });
   console.log(`[room ${from.systemId} -> ${targetId}] ${player.name} folded (cost ${(cost * 100) | 0}%)`);
+}
+
+/** Write a pilot's progression back to the store. No-op without a key. */
+function saveProfile(sock, room, player) {
+  if (!sock.pilotKey || !player) return;
+  profiles.put(sock.pilotKey, captureProfile(player, room.systemId, Date.now()));
 }
 
 function send(sock, obj) {
@@ -204,6 +277,16 @@ setInterval(() => {
 
   for (const room of rooms.values()) {
     for (let i = 0; i < steps; i++) room.step(TICK_DT);
+
+    // A survey is progress, and progress that only exists in memory is lost to
+    // the first crash. The store coalesces its own writes, so flagging here
+    // costs nothing per scan.
+    for (const s of wss.clients) {
+      if (s.room !== room) continue;
+      const p = room.players.get(s.playerId);
+      if (p?.progressDirty) { p.progressDirty = false; saveProfile(s, room, p); }
+    }
+
     if (!due) continue;
     for (const s of wss.clients) {
       if (s.room !== room || s.readyState !== 1) continue;
@@ -214,4 +297,16 @@ setInterval(() => {
   }
 }, 1000 / TICK_HZ);
 
-process.on('SIGINT', () => { console.log('\nshutting down'); wss.close(); process.exit(0); });
+process.on('SIGINT', () => {
+  console.log('\nshutting down');
+  // Every connected pilot, not just the dirty ones: a clean stop should not
+  // cost anybody the session they were in the middle of.
+  for (const s of wss.clients) {
+    const p = s.room?.players.get(s.playerId);
+    if (p) saveProfile(s, s.room, p);
+  }
+  profiles.flush();
+  console.log(`[profiles] ${profiles.size} saved`);
+  wss.close();
+  process.exit(0);
+});
