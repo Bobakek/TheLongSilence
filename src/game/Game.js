@@ -40,6 +40,7 @@ import {
   canFold as simCanFold, scanRangeFor as simScanRange, inScanRange as simInScanRange,
   resonatorSystemsFor as simResonatorSystems, resonatorIndexFor as simResonatorIndex,
   placeAnomalies as simPlaceAnomalies,
+  canJump as simCanJump, payJump as simPayJump,
 } from '../sim/index.js';
 
 
@@ -2782,6 +2783,12 @@ export class Game {
       },
     });
 
+    net.onJumped = (m) => this.onJumped(m);
+    net.onJumpDenied = (m) => {
+      this.hud.log(m.reason === 'noCharge' ? 'FOLD CHARGE INSUFFICIENT' : 'FOLD REFUSED', 'hi');
+      this.audio.ping('deny');
+    };
+
     this.net = net;
     this.remoteShips = new RemoteShips(this.scene);
     this.hud.log(`ROOM · ${this.system.star.name.toUpperCase()} · PILOT ${net.id}`, 'ok');
@@ -2989,6 +2996,51 @@ export class Game {
     }
   }
 
+  /**
+   * The one entry point for folding to another system.
+   *
+   * Alone, this end checks the rule and spends the charge. In a room it asks,
+   * and the answer arrives as JUMPED or JUMP_DENIED — the charge is the
+   * server's to spend, and the star map must not deduct it locally or a pilot
+   * would pay twice for one fold.
+   */
+  requestJump(id) {
+    if (id === this.currentSystemId) return false;
+    if (this.net) {
+      this.starmap.close();
+      return this.net.requestJump(id);
+    }
+    const refused = simCanJump(this.ship, this.galaxy, this.currentSystemId, id);
+    if (refused) { this.audio?.ping('deny'); return false; }
+    simPayJump(this.ship, this.galaxy, this.currentSystemId, id);
+    this.starmap.close();
+    this.hyperjump(id);
+    return true;
+  }
+
+  /** What arriving somewhere new looks like, once it has been granted. */
+  async _arrive(id) {
+    this.hud.setFlash(0.85);
+    this.ship.foldMode = false;
+    this.hud.setFold(false);
+    // Arriving somewhere new is the one moment worth a camera move, every time.
+    const arr = SEQUENCES.arrival(this);
+    this.director.play('arrival:' + id, arr.shots, { title: arr.title, sub: arr.sub });
+  }
+
+  /** The room has folded us. Rebuild the system, then hand the world back. */
+  async onJumped(m) {
+    this.hud.setFlash(1);
+    this.audio.ping('jump');
+    await this.loadSystem(m.system, true);
+    this.net.attach(this.bodies, this.ship);
+    this.remoteShips?.dispose();
+    const { RemoteShips } = await import('../net/RemoteShips.js');
+    this.remoteShips = new RemoteShips(this.scene);
+    this.hud.log(`ARRIVED · ${m.systemName || this.system.star.name}`, 'hi');
+    this._arrive(m.system);
+  }
+
   async hyperjump(id) {
     if (id === this.currentSystemId) return;
     this.starmap.close();
@@ -2996,12 +3048,7 @@ export class Game {
     this.audio.ping('jump');
     await wait(420);
     await this.loadSystem(id);
-    this.hud.setFlash(0.85);
-    this.ship.foldMode = false;
-    this.hud.setFold(false);
-    // Arriving somewhere new is the one moment worth a camera move, every time.
-    const arr = SEQUENCES.arrival(this);
-    this.director.play('arrival:' + id, arr.shots, { title: arr.title, sub: arr.sub });
+    this._arrive(id);
   }
 
   /* --------------------------------------------------------------- post */

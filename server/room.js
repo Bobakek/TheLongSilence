@@ -149,6 +149,9 @@ export class Room {
     this.bodies = world.bodies;
     this.stub = world.stub;
     this.sys = world.sys;
+    // Kept because the jump cost is a distance on the star map, so arbitrating
+    // a fold means knowing where the other thirteen systems are.
+    this.galaxy = world.galaxy;
     this.resonatorSystems = world.resonatorSystems;
     this.players = new Map();
     this.tick = 0;
@@ -159,6 +162,34 @@ export class Room {
     this.spawn(p);
     this.players.set(p.id, p);
     return p;
+  }
+
+  /**
+   * Take in a pilot who has folded here from another room.
+   *
+   * The Player object travels: its discoveries, its Cantos and the upgrades
+   * already applied to its ship are the pilot's, not the room's. What does not
+   * travel is anything tied to the old room's clock — the input queue, the
+   * scanner, the acknowledged sequence — because replaying inputs the previous
+   * room banked would fly the ship somewhere in a system it is no longer in.
+   */
+  adopt(player) {
+    player.queue.length = 0;
+    player.primed = false;
+    player.starved = 0;
+    player.dropped = 0;
+    player.prevButtons = 0;
+    player.lastSeq = 0;
+    player.seenSeq = 0;
+    player.scan.progress = 0;
+    player.scan.targetId = null;
+    player.scan.scanning = false;
+    player.events.length = 0;
+    player.ship.foldMode = false;
+    player.ship.foldSpeed = 0;
+    this.spawn(player);
+    this.players.set(player.id, player);
+    return player;
   }
 
   remove(id) { this.players.delete(id); }

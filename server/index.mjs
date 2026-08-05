@@ -15,6 +15,7 @@
 import { WebSocketServer } from 'ws';
 import { Room } from './room.js';
 import { C, S, TICK_HZ, TICK_DT, SNAPSHOT_EVERY, PROTOCOL_VERSION, decodeInput } from '../src/net/protocol.js';
+import { canJump, payJump } from '../src/sim/index.js';
 
 const argv = process.argv.slice(2);
 const arg = (name, dflt) => {
@@ -83,6 +84,8 @@ wss.on('connection', (sock, req) => {
       player.seenSeq = cmd.seq;
       if (LAG_MS) setTimeout(() => player.enqueue(cmd), LAG_MS);
       else player.enqueue(cmd);
+    } else if (m.t === C.JUMP) {
+      jump(sock, m.system | 0);
     } else if (m.t === C.PING) {
       // Lagged like everything else, or --lag would report a 0 ms round trip
       // on a link it is deliberately delaying.
@@ -92,14 +95,67 @@ wss.on('connection', (sock, req) => {
     }
   });
 
+  /* `sock.room`, not the `room` this connection opened in.
+     A pilot who folds is moved to another room, and a `bye` closed over the
+     original would delete them from the system they left — which they are
+     already gone from — and leave them standing in the one they are in, for
+     ever. Every disconnect after a jump left a ghost the next arrival could
+     see and nobody could remove. */
   const bye = () => {
-    room.remove(player.id);
-    broadcast(room, { t: S.LEAVE, id: player.id });
-    console.log(`[room ${systemId}] - ${player.name} (${room.players.size} aboard)`);
+    const here = sock.room || room;
+    here.remove(player.id);
+    broadcast(here, { t: S.LEAVE, id: player.id });
+    console.log(`[room ${here.systemId}] - ${player.name} (${here.players.size} aboard)`);
   };
   sock.on('close', bye);
   sock.on('error', bye);
 });
+
+/**
+ * Fold a pilot into another system's room.
+ *
+ * The rule is `canJump` in src/sim, the same one the star map draws on its
+ * plate, and the charge is spent here rather than on the client — a client
+ * that could spend its own fold charge could also decline to.
+ *
+ * The Player object moves rooms intact: discoveries, Cantos and the upgrades
+ * already on its ship belong to the pilot. Everything keyed to the old room's
+ * clock is dropped by `adopt`.
+ */
+function jump(sock, targetId) {
+  const from = sock.room;
+  const player = from?.players.get(sock.playerId);
+  if (!from || !player) return;
+
+  const refused = canJump(player.ship, from.galaxy, from.systemId, targetId);
+  if (refused) {
+    send(sock, { t: S.JUMP_DENIED, reason: refused, system: targetId });
+    return;
+  }
+
+  const cost = payJump(player.ship, from.galaxy, from.systemId, targetId);
+  const to = roomFor(targetId);
+
+  from.remove(player.id);
+  broadcast(from, { t: S.LEAVE, id: player.id });
+  to.adopt(player);
+  sock.room = to;
+  broadcast(to, { t: S.JOIN, id: player.id, name: player.name }, player.id);
+
+  send(sock, {
+    t: S.JUMPED,
+    system: targetId,
+    systemName: to.stub.name,
+    tick: to.tick,
+    cost,
+    // What the fold actually left in the tank. The charge regenerates every
+    // tick, so a client that tried to work this out from a later snapshot
+    // would measure the recovery rather than the price.
+    charge: player.ship.foldCharge,
+    players: [...to.players.values()].map((p) => ({ id: p.id, name: p.name })),
+  });
+  console.log(`[room ${from.systemId} -> ${targetId}] ${player.name} folded (cost ${(cost * 100) | 0}%)`);
+}
 
 function send(sock, obj) {
   if (sock.readyState === 1) sock.send(JSON.stringify(obj));

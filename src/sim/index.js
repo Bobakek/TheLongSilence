@@ -27,6 +27,7 @@ export {
   scanRangeFor, inScanRange, aimTargetFrom,
 } from './targeting.js';
 export { createScanState, stepScan, SCAN_RATE, SCAN_DECAY } from './scan.js';
+export { jumpCost, canJump, payJump } from './jump.js';
 export {
   buildSimBodies, createSimWorld, createHostStub,
   resonatorSystemsFor, resonatorIndexFor, placeAnomalies,

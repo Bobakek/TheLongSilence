@@ -708,15 +708,13 @@ export class HoloMap {
     });
   }
 
+  /* The plate draws the cost and the charge; whether the fold is granted is
+     `Game.requestJump`, which is the room's answer when there is a room and
+     the local rule when there is not. Deducting the charge here would mean a
+     networked client spending fold charge the server still thinks it has. */
   confirm() {
     const g = this.game;
     if (this.sel === g.currentSystemId) return false;
-    const s = g.galaxy[this.sel], cur = g.galaxy[g.currentSystemId];
-    const cost = Math.min(1, Math.hypot(s.x - cur.x, s.y - cur.y) / 80);
-    if (g.ship.foldCharge < cost) { g.audio?.ping('deny'); return false; }
-    g.ship.foldCharge = Math.max(0, g.ship.foldCharge - cost);
-    this.close();
-    g.hyperjump(this.sel);
-    return true;
+    return g.requestJump(this.sel);
   }
 }

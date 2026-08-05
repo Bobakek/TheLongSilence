@@ -42,6 +42,7 @@ export const C = {
   HELLO: 'hello',
   INPUT: 'in',
   PING: 'ping',
+  JUMP: 'jump',
 };
 
 /** An empty input, and the canonical field order. */
@@ -127,6 +128,8 @@ export const S = {
   LEAVE: 'leave',
   PONG: 'pong',
   ERROR: 'err',
+  JUMPED: 'jumped',        // you are now in another room
+  JUMP_DENIED: 'nojump',
 };
 
 /**

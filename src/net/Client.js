@@ -151,6 +151,28 @@ export class NetClient {
 
       case S.JOIN: this._ensure(m.id).name = m.name; break;
       case S.LEAVE: this.remotes.delete(m.id); break;
+
+      case S.JUMPED: {
+        /* A new room, a new clock, and a new set of bodies.
+           Everything the client had in flight belonged to the system it just
+           left: unacknowledged inputs would be replayed against planets that
+           are no longer there, and remembered neighbours are somewhere the
+           camera can no longer see. Both are dropped rather than migrated. */
+        this.system = m.system;
+        this.tick = m.tick || 0;
+        this.pending.length = 0;
+        this.seq = 0;
+        this.lastAckButtons = 0;
+        this.remotes.clear();
+        this.scan = { progress: 0, targetId: null, scanning: false };
+        this._acc = 0;
+        this.bodies = null;          // Game re-attaches once the system is built
+        for (const p of m.players || []) if (p.id !== this.id) this._ensure(p.id).name = p.name;
+        this.onJumped?.(m);
+        break;
+      }
+
+      case S.JUMP_DENIED: this.onJumpDenied?.(m); break;
       case S.PONG: this.stats.rttMs = Math.round(performance.now() - this._pingAt); break;
       default: break;
     }
@@ -271,6 +293,20 @@ export class NetClient {
     this.ship.foldMode = !!you.f; this.ship.hull = you.hl; this.ship.foldCharge = you.fc;
     this.authoritative = you;
 
+    /* No world to replay against.
+       Between a fold being granted and the new system finishing its cubemap
+       bakes there is a second or more in which snapshots keep arriving and
+       `bodies` is null — the client has left one system and not yet built the
+       next. `update` already guarded on this; `_reconcile` did not, so every
+       snapshot in that window threw inside seekSystem and took the socket down
+       with it. Take the state, drop the backlog, and wait to be re-attached:
+       those inputs were for a system this pilot is no longer in. */
+    if (!this.bodies) {
+      this.pending.length = 0;
+      this.tick = serverTick;
+      return;
+    }
+
     /* 3. replay. The server consumed `ack` on the tick this snapshot was built,
        so the first unacknowledged input belongs to the tick after it, and the
        world has to be wound to each of those ticks in turn — the envelope reads
@@ -386,6 +422,13 @@ export class NetClient {
   }
 
   /* ----------------------------------------------------------------- misc */
+
+  /** Ask the room to fold us elsewhere. The answer is JUMPED or JUMP_DENIED. */
+  requestJump(systemId) {
+    if (!this.connected) return false;
+    this.ws.send(JSON.stringify({ t: C.JUMP, system: systemId | 0 }));
+    return true;
+  }
 
   setButtons({ fold = false, boost = false, stop = false } = {}) {
     this._buttons |= (fold ? BTN.FOLD : 0) | (boost ? BTN.BOOST : 0) | (stop ? BTN.STOP : 0);
