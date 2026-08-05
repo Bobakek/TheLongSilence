@@ -2702,6 +2702,29 @@ export class Game {
     const pitch = THREE.MathUtils.clamp(Math.asin(THREE.MathUtils.clamp(local.y, -1, 1)) * 1.9, -1, 1);
     const aligned = local.z < 0 && Math.abs(yaw) < 0.06 && Math.abs(pitch) < 0.06;
 
+    /* ------------------------------------------------------------- the signs
+
+       The two axes do not take the same sign, which is why this was wrong for
+       so long and why it is worth spelling out rather than leaving as two
+       characters to be "tidied up" later.
+
+       In the flight model the stick is fed straight into angular acceleration
+       and the result is applied as a rotation in the ship's own frame. Work
+       either axis through: a positive rotation about local X carries the nose
+       (0,0,-1) to (0, sin, -cos) — the nose goes UP. A positive rotation about
+       local Y carries it to (-sin, 0, -cos) — the nose goes LEFT.
+
+       So for a target that is above (local.y > 0, pitch > 0) the ship needs a
+       POSITIVE pitch input, while for one to starboard (local.x > 0, yaw > 0)
+       it needs a NEGATIVE yaw input. Sending -pitch pushed the nose away from
+       the target on the vertical axis, and the loop never converged: measured
+       over two hundred seconds against a planet sixty thousand units away, the
+       angle to target swung between 19° and 142° and the ship closed 574 of
+       those units while flying in circles at cruise. `aligned` was therefore
+       never true, so the throttle stayed at its 0.35 hunting value and the
+       fold was never engaged either — the autopilot appeared to work, slowly,
+       which is the worst way for something to be broken. */
+
     const over = dist - standoff;
     if (over < standoff * 0.35) {
       // arrived: bleed off and hand control back
@@ -2713,7 +2736,7 @@ export class Game {
         this.audio.ping('arrive');
         this.cancelAutopilot(true);
       }
-      return { pitch: -pitch, yaw: -yaw, roll: 0, strafeX: 0, strafeY: 0 };
+      return { pitch, yaw: -yaw, roll: 0, strafeX: 0, strafeY: 0 };
     }
 
     // fold for anything beyond a couple of minutes at cruise
@@ -2722,7 +2745,7 @@ export class Game {
     if (!wantFold && ship.foldMode) this.toggleFold(false);
     ship.throttle = ship.foldMode ? 1 : (aligned ? 1 : 0.35);
 
-    return { pitch: -pitch, yaw: -yaw, roll: 0, strafeX: 0, strafeY: 0 };
+    return { pitch, yaw: -yaw, roll: 0, strafeX: 0, strafeY: 0 };
   }
 
   /* ------------------------------------------------------- proximity */
