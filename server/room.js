@@ -2,8 +2,16 @@ import {
   createSimWorld, createShipState, engageFold, dropFold,
   positionSystem, stepShip, createScanState, stepScan,
   spawnPatrols, stepNpc,
+  canFire, fire, aimForward, stepCombatState, stepProjectiles,
 } from '../src/sim/index.js';
-import { TICK_DT, BTN, encodeShip } from '../src/net/protocol.js';
+import * as THREE from 'three';
+
+const _fireDir = new THREE.Vector3();
+/* A ceiling on bolts in flight, so a stuck trigger cannot make the room's
+   per-tick cost unbounded. Four a second per shooter and a two-second life
+   means a busy system sits nowhere near this. */
+const MAX_BOLTS = 400;
+import { TICK_DT, BTN, encodeShip, encodeBolt } from '../src/net/protocol.js';
 import { CANTOS, LOGS } from '../src/game/lore.js';
 import { applyProfile } from './profiles.js';
 
@@ -163,6 +171,8 @@ export class Room {
        stepped and replicated because they have to be able to react. See the
        header of src/sim/npc.js. */
     this.npcs = spawnPatrols(this.sys, this.stub, this.bodies, 2);
+    this.bolts = [];
+    this.now = 0;             // room seconds, the clock every weapon runs on
   }
 
   add(name, profile = null) {
@@ -223,9 +233,18 @@ export class Room {
     p.ship.vel.set(0, 0, 0);
   }
 
+  /** Everything a bolt may hit, pilots and hunters alike. */
+  combatants() {
+    const out = [];
+    for (const p of this.players.values()) out.push({ id: `p:${p.id}`, ship: p.ship, player: p });
+    for (const n of this.npcs) out.push({ id: n.id, ship: n.ship, npc: n });
+    return out;
+  }
+
   /** One authoritative step for everybody, through the shared stepper. */
   step(dt = TICK_DT) {
     this.tick++;
+    this.now += dt;
     positionSystem(this.bodies, dt);
 
     for (const p of this.players.values()) {
@@ -233,6 +252,10 @@ export class Room {
       stepShip(p.ship, this.bodies, dt,
         { raw: cmd.raw, buttons: cmd.buttons, prevButtons: p.prevButtons }, p.host);
       p.prevButtons = cmd.buttons;
+      // Held, not tapped: the cooldown is what limits the rate. Recorded here
+      // because gunnery runs after every ship has moved, and firing from where
+      // the hull was at the start of the tick would put the muzzle behind it.
+      p.firing = (cmd.buttons & BTN.FIRE) !== 0;
 
       const done = stepScan(p.scan, p.ship, this.bodies, dt,
         { aim: cmd.aim, scanning: (cmd.buttons & BTN.SCAN) !== 0 },
@@ -246,6 +269,82 @@ export class Room {
        what a tail chase is made of. */
     const marks = [...this.players.values()];
     for (const npc of this.npcs) stepNpc(npc, this.bodies, marks, dt);
+
+    this.stepCombat(dt);
+  }
+
+  /* ------------------------------------------------------------- gunnery */
+
+  stepCombat(dt) {
+    const all = this.combatants();
+    for (const c of all) stepCombatState(c.ship, dt, this.now);
+
+    // ---- pilots pull the trigger
+    for (const p of this.players.values()) {
+      if (!p.firing) continue;
+      if (p.ship.hull <= 0) continue;
+      if (canFire(p.ship)) continue;
+      /* Along the hull, not along the camera. The aim quaternion says where
+         the pilot is looking, and a gun bolted to the nose does not care —
+         letting it fire down the camera axis would mean shooting round
+         corners in the chase view. */
+      this.bolts.push(fire(p.ship, `p:${p.id}`, aimForward(p.ship, _fireDir), this.now));
+      p.events.push({ type: 'fired' });
+    }
+
+    // ---- hunters shoot back
+    for (const n of this.npcs) {
+      if (n.ship.hull <= 0) continue;
+      if (n.ai.state !== 'pursue' || !n.ai.wantsFire) continue;
+      if (canFire(n.ship)) continue;
+      this.bolts.push(fire(n.ship, n.id, aimForward(n.ship, _fireDir), this.now));
+    }
+
+    // ---- and the bolts resolve
+    const { alive, hits } = stepProjectiles(this.bolts, all, dt, this.now);
+    this.bolts = alive;
+
+    for (const h of hits) {
+      const victim = all.find((c) => c.id === h.target);
+      const shooter = all.find((c) => c.id === h.owner);
+      const ev = {
+        type: 'hit', target: h.target, owner: h.owner,
+        shield: h.shield, hull: h.hull, destroyed: h.destroyed,
+        at: [h.at.x, h.at.y, h.at.z],
+      };
+      // Both ends of a shot want to know: the one that landed it and the one
+      // that took it. Anyone else finds out from the shield flare.
+      if (victim?.player) victim.player.events.push(ev);
+      if (shooter?.player && shooter !== victim) shooter.player.events.push(ev);
+      if (h.destroyed) this.onDestroyed(victim, shooter);
+    }
+
+    if (this.bolts.length > MAX_BOLTS) this.bolts.splice(0, this.bolts.length - MAX_BOLTS);
+  }
+
+  /**
+   * Something reached zero hull.
+   *
+   * A hunter is removed. A pilot is put back at a spawn point with the hull
+   * made good — there is no death screen in this game and inventing one is not
+   * M6's business, but leaving a pilot at zero hull with nothing to do would
+   * be worse than either.
+   */
+  onDestroyed(victim, shooter) {
+    if (!victim) return;
+    if (victim.npc) {
+      this.npcs = this.npcs.filter((n) => n !== victim.npc);
+      if (shooter?.player) shooter.player.events.push({ type: 'killed', id: victim.id, kind: victim.npc.kind });
+      return;
+    }
+    const p = victim.player;
+    if (!p) return;
+    p.ship.hull = p.ship.hullMax;
+    p.ship.shield = p.ship.shieldMax;
+    p.ship.hitAt = -999;
+    this.spawn(p);
+    p.progressDirty = true;
+    p.events.push({ type: 'destroyed', by: shooter ? shooter.id : null });
   }
 
   isDiscovered(player, id) {
@@ -327,7 +426,9 @@ export class Room {
          thing that differs, and it only picks a hue. */
       npcs: this.npcs.map((n) => ({
         ...encodeShip(n.id, n.ship), k: n.kind, f2: n.faction, st: n.ai.state,
+        h: n.hostile ? 1 : 0,
       })),
+      bolts: this.bolts.map(encodeBolt),
     };
     if (me) { me.starved = 0; me.dropped = 0; }
     if (me && me.events.length) { out.ev = me.events.slice(); me.events.length = 0; }

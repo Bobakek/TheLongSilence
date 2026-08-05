@@ -65,9 +65,18 @@ export class Input {
         dom.requestPointerLock();
       }
       if (e.button === 2) { this.pressed.add('scanClick'); this.rmb = true; }
+      /* The trigger, once the pointer is captured. Held rather than tapped —
+         the weapon's own cooldown is what limits the rate, so a client that
+         fired on every frame would gain nothing but packets. The first click
+         is spent taking the pointer lock and deliberately does not shoot. */
+      if (e.button === 0 && this.locked) this.lmb = true;
     });
     dom.addEventListener('contextmenu', (e) => e.preventDefault());
-    window.addEventListener('mouseup', (e) => { if (e.button === 2) this.rmb = false; });
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 2) this.rmb = false;
+      if (e.button === 0) this.lmb = false;
+    });
+    window.addEventListener('blur', () => { this.lmb = false; this.rmb = false; });
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === dom;
     });

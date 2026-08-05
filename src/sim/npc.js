@@ -38,6 +38,8 @@ import { mulberry32 } from '../world/generate.js';
 export const AGGRO_RANGE = 900;
 export const LOSE_RANGE = 2400;
 export const STANDOFF = 60;
+/** Inside this, and lined up, a hostile craft shoots. Well within a bolt's reach. */
+export const FIRE_RANGE = 500;
 
 const _cmd = {};
 const _toHome = new THREE.Vector3();
@@ -124,6 +126,12 @@ export function stepNpc(npc, bodies, targets, dt, host = npc.host) {
       : cmd.aligned ? Math.min(1, closing / 400)
         : 0.35;
     wantBoost = (cmd.aligned && closing > 600) ? 1 : 0;
+
+    /* Only a hostile craft pulls the trigger, and only with the nose actually
+       on the mark and the mark in reach. A patrol pursues to look at you —
+       that is what a patrol is for — and shooting anyone who happens to be
+       nearby would make every system a warzone by the second minute. */
+    npc.ai.wantsFire = npc.hostile && cmd.aligned && cmd.dist < FIRE_RANGE;
   } else {
     /* Nothing to chase: drift back toward the patrol anchor and idle there. */
     npc.ai.state = 'patrol';
@@ -131,6 +139,7 @@ export function stepNpc(npc, bodies, targets, dt, host = npc.host) {
     const d = _toHome.length();
     cmd = steerToward(s, npc.home, _cmd);
     wantThrottle = d > 400 ? (cmd.aligned ? 0.7 : 0.3) : 0;
+    npc.ai.wantsFire = false;
   }
 
   /* Drive the throttle through the stick, not by assignment.
@@ -164,22 +173,37 @@ export function stepNpc(npc, bodies, targets, dt, host = npc.host) {
  * test can say "the second patrol" and mean it. They are anchored to inhabited
  * worlds because that is where a patrol has a reason to be.
  */
-export function spawnPatrols(sys, stub, bodies, count = 2) {
+export function spawnPatrols(sys, stub, bodies, count = 2, raiders = 1) {
   const rnd = mulberry32((stub.seed ^ 0x7a1f) >>> 0);
   const hosts = bodies.filter((b) => b.kind === 'planet');
   if (!hosts.length) return [];
 
-  const out = [];
-  for (let i = 0; i < count; i++) {
+  const anchor = () => {
     const host = hosts[Math.floor(rnd() * hosts.length)];
     const ang = rnd() * Math.PI * 2;
     const rad = host.radius * (1.8 + rnd() * 1.6);
-    const home = new THREE.Vector3(
+    return new THREE.Vector3(
       host.absPos.x + Math.cos(ang) * rad,
       host.absPos.y + (rnd() - 0.5) * rad * 0.4,
       host.absPos.z + Math.sin(ang) * rad,
     );
-    out.push(createNpc({ kind: 'patrol', faction: 'institute', home, seed: stub.seed + i * 131 }));
+  };
+
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    out.push(createNpc({
+      kind: 'patrol', faction: 'institute', hostile: false,
+      home: anchor(), seed: stub.seed + i * 131,
+    }));
+  }
+  /* And something that shoots. A system of patrols that only ever look at you
+     is not PvE; a system where everything shoots is not this game. One hostile
+     craft per system is enough to have a fight worth having. */
+  for (let i = 0; i < raiders; i++) {
+    out.push(createNpc({
+      kind: 'raider', faction: 'free', hostile: true,
+      home: anchor(), seed: stub.seed + 977 + i * 419,
+    }));
   }
   return out;
 }

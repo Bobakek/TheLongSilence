@@ -851,6 +851,7 @@ export class Game {
       // pixels, and dynamic resolution moves the two apart every few seconds.
       this.remoteShips?.update(this.net.remotes, this.origin, this.camera,
         (this.engine.height || 1080) * (this.engine.pixelRatio || 1));
+      this.tracers?.update(this.net.bolts, this.origin, `p:${this.net.id}`);
       this._drainNetEvents();
       this._netScanView();
       this.updatePost(dt);
@@ -2751,8 +2752,8 @@ export class Game {
    * socket only ever carries ships.
    */
   async connectNet(url, system = 0) {
-    const [{ NetClient }, { RemoteShips }] = await Promise.all([
-      import('../net/Client.js'), import('../net/RemoteShips.js'),
+    const [{ NetClient }, { RemoteShips }, { Tracers }] = await Promise.all([
+      import('../net/Client.js'), import('../net/RemoteShips.js'), import('../net/Tracers.js'),
     ]);
     const net = new NetClient(url, { system });
     await net.connect();
@@ -2796,6 +2797,13 @@ export class Game {
         i.pressed.delete('scanClick');
         return held;
       },
+      firing: () => {
+        if (this.starmap.open || this.codex.open) return false;
+        // Only from the helm. Shooting while walking the corridor would be a
+        // gun with nobody behind it.
+        if (this.mode !== 'pilot' && this.mode !== 'exterior') return false;
+        return !!this.input.lmb || this.input.touchBtn.has('fire');
+      },
     });
 
     net.onJumped = (m) => this.onJumped(m);
@@ -2806,6 +2814,7 @@ export class Game {
 
     this.net = net;
     this.remoteShips = new RemoteShips(this.scene);
+    this.tracers = new Tracers(this.scene);
     this.hud.log(`ROOM · ${this.system.star.name.toUpperCase()} · PILOT ${net.id}`, 'ok');
     if (mine.returning) {
       this.hud.log(`ARCHIVE RESTORED · ${this.discoveries.size} SURVEYED · `
@@ -2829,6 +2838,23 @@ export class Game {
         this.hud.log('FOLD BLOCKED · TOO DEEP IN MASS', 'hi'); this.audio.ping('deny');
       } else if (type === 'foldRefused:noCharge') {
         this.hud.log('FOLD CHARGE INSUFFICIENT', 'hi');
+      } else if (type === 'hit') {
+        // Taking one shakes the cockpit and flares; landing one just clicks.
+        if (e.target === `p:${this.net.id}`) {
+          this.shake = Math.min(1, this.shake + (e.hull > 0 ? 0.5 : 0.22));
+          this.audio.ping(e.hull > 0 ? 'deny' : 'ui');
+          if (e.hull > 0) this.hud.log('HULL BREACH', 'hi');
+        } else {
+          this.audio.ping('ui');
+        }
+      } else if (type === 'killed') {
+        this.hud.log(`DESTROYED · ${(e.kind || 'CONTACT').toUpperCase()}`, 'ok');
+        this.audio.ping('scan');
+      } else if (type === 'destroyed') {
+        this.hud.log('HULL LOST · SYSTEMS RESTORED', 'hi');
+        this.hud.setFlash(1);
+        this.audio.ping('jump');
+        this.shake = 1;
       } else if (type === 'scanned') {
         // Mirror the room's record so the archive and the target list agree
         // with it, then play the reaction. The decision was not ours.

@@ -74,6 +74,7 @@ export class NetClient {
     this.events = [];
     this.scan = { progress: 0, targetId: null, scanning: false };
     this.resonance = 0;
+    this.bolts = [];
 
     this.seq = 0;
     this._acc = 0;
@@ -173,6 +174,11 @@ export class NetClient {
         if (m.you) this._reconcile(m.you, m.tick);
         this._readRemotes(m);
         this._readNpcs(m);
+        /* Bolts are replaced wholesale rather than tracked by id. They live
+           two seconds, they are never interacted with, and the only thing the
+           renderer wants is where each streak is right now — matching them up
+           frame to frame would be bookkeeping in exchange for nothing. */
+        this.bolts = m.bolts || [];
         if (m.ev) this.events.push(...m.ev);
         break;
       }
@@ -502,7 +508,7 @@ export class NetClient {
    * only appears while the boost is held, which is the worst kind.
    */
   makeSampler(state, extra = {}) {
-    const { aim = null, scanning = null } = extra;
+    const { aim = null, scanning = null, firing = null } = extra;
     return () => ({
       raw: {
         pitch: state.pitch, yaw: state.yaw, roll: state.roll,
@@ -515,7 +521,8 @@ export class NetClient {
       // reach the room for exactly one tick of a two-second hold.
       buttons: this.takeButtons()
         | (state.boost ? BTN.BOOST : 0)
-        | (scanning && scanning() ? BTN.SCAN : 0),
+        | (scanning && scanning() ? BTN.SCAN : 0)
+        | (firing && firing() ? BTN.FIRE : 0),
       aim: aim ? aim() : null,
     });
   }

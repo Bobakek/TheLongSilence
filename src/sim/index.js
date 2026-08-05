@@ -30,8 +30,14 @@ export { createScanState, stepScan, SCAN_RATE, SCAN_DECAY } from './scan.js';
 export { jumpCost, canJump, payJump } from './jump.js';
 export { steerToward, steerToIntercept, ALIGNED_RAD } from './steer.js';
 export {
+  createCombatState, canFire, fire, aimForward, applyDamage,
+  stepCombatState, stepProjectiles, segmentHitsSphere, resetBoltIds,
+  BOLT_SPEED, BOLT_TTL, BOLT_DAMAGE, FIRE_COOLDOWN, HIT_RADIUS,
+  SHIELD_MAX, SHIELD_REGEN, SHIELD_HOLDOFF, MUZZLE,
+} from './weapons.js';
+export {
   createNpc, stepNpc, spawnPatrols, resetNpcIds,
-  AGGRO_RANGE, LOSE_RANGE, STANDOFF,
+  AGGRO_RANGE, LOSE_RANGE, STANDOFF, FIRE_RANGE,
 } from './npc.js';
 export {
   buildSimBodies, createSimWorld, createHostStub,

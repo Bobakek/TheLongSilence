@@ -34,6 +34,7 @@ export const BTN = {
   BOOST: 1 << 1,
   STOP: 1 << 2,
   SCAN: 1 << 3,          // held, not tapped
+  FIRE: 1 << 4,          // held; the cooldown does the rate limiting
 };
 
 /* ------------------------------------------------------------------ client */
@@ -183,6 +184,19 @@ export function encodeShip(id, s) {
        cheaper and would mean a client that missed one packet drifts until it
        reconnects. Eight numbers is not the problem worth solving here. */
     ms: s.maxSpeed, sr: s.scanRate, fr: s.foldRegen,
+    // combat state — the shield is drawn, the cooldown gates the trigger, and
+    // both are stepped every tick, so both belong on the wire for the same
+    // reason angVel does
+    sh: s.shield, shm: s.shieldMax, cd: s.cooldown,
+  };
+}
+
+/** One bolt in flight. Position and velocity; the client draws the streak. */
+export function encodeBolt(b) {
+  return {
+    i: b.id, o: b.owner,
+    p: [b.pos.x, b.pos.y, b.pos.z],
+    v: [b.vel.x, b.vel.y, b.vel.z],
   };
 }
 function r4(n) { return Math.round(n * 1e4) / 1e4; }

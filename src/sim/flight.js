@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createCombatState } from './weapons.js';
 
 /* ============================================================================
    The flight model, with nothing attached to it.
@@ -56,6 +57,10 @@ export function createShipState() {
     hullMax: 1,
     heat: 0.12,
     scanRate: 1,
+    // Weapon and damage state. Mixed in rather than kept beside the ship so
+    // that everything the room has to replicate about a hull lives in one
+    // object — a second bag would be a second thing to forget on the wire.
+    ...createCombatState(),
   };
 }
 
