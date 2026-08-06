@@ -71,15 +71,68 @@ export function steerToward(ship, targetPos, out = {}) {
 /**
  * Lead a moving target: aim where it will be, not where it is.
  *
- * A pursuer that steers at the present position of something crossing its bow
- * flies a tail chase for ever. `speed` is how fast the pursuer expects to
- * close; at these scales the estimate does not need to be good, only present.
+ * ----------------------------------------------------------------- the maths
+ *
+ * This solves for the intercept rather than guessing at it. With `r` the
+ * offset to the target, `u` its velocity and `v` our speed, the meeting time
+ * is where the target's path and a sphere of our own reach touch:
+ *
+ *     |r + u t| = v t
+ *     (|u|² − v²) t² + 2 (r·u) t + |r|² = 0
+ *
+ * and the answer is the smallest positive root.
+ *
+ * The first version of this divided the distance by our own top speed and used
+ * that as the time — which is only correct for a stationary target. Against
+ * anything under way it over-leads by the ratio of the two speeds: chasing a
+ * craft doing sixty at six hundred units gave a ten-second solution and put
+ * the aim point six hundred units past it, in empty space. The ship then flew
+ * at the empty space. It looked exactly like an autopilot that could not make
+ * up its mind about what it was chasing.
+ *
+ * -------------------------------------------------------------- no solution
+ *
+ * When the target is as fast as the pursuer and running, there is no intercept
+ * — the quadratic has no positive root — and the honest answer is to point
+ * straight at it and close only if it turns. That is what a stern chase is,
+ * and pretending otherwise by aiming somewhere hopeful is how the old version
+ * lost the target completely.
  */
 const _lead = new THREE.Vector3();
+const _rel = new THREE.Vector3();
+
 export function steerToIntercept(ship, targetPos, targetVel, speed, out = {}) {
-  _lead.copy(targetPos).sub(ship.absPos);
-  const dist = _lead.length();
-  const t = Math.min(dist / Math.max(speed, 1e-3), 30);   // capped: no fantasy leads
+  _rel.copy(targetPos).sub(ship.absPos);
+
+  const v = Math.max(speed, 1e-3);
+  const a = targetVel.lengthSq() - v * v;
+  const b = 2 * _rel.dot(targetVel);
+  const c = _rel.lengthSq();
+
+  let t = -1;
+  if (Math.abs(a) < 1e-9) {
+    // exactly matched speeds: the quadratic degenerates to a line
+    if (b < -1e-9) t = -c / b;
+  } else {
+    const disc = b * b - 4 * a * c;
+    if (disc >= 0) {
+      const root = Math.sqrt(disc);
+      const t1 = (-b - root) / (2 * a);
+      const t2 = (-b + root) / (2 * a);
+      // smallest positive
+      const lo = Math.min(t1, t2), hi = Math.max(t1, t2);
+      t = lo > 1e-6 ? lo : (hi > 1e-6 ? hi : -1);
+    }
+  }
+
+  // No intercept, or one so far out it is a fantasy: chase it directly.
+  if (!(t > 0) || t > 120) return steerToward(ship, targetPos, out);
+
   _lead.copy(targetVel).multiplyScalar(t).add(targetPos);
-  return steerToward(ship, _lead, out);
+  const cmd = steerToward(ship, _lead, out);
+  /* Report the range to the *target*, not to the aim point. Every caller uses
+     `dist` to decide whether it has arrived or may shoot, and the distance to
+     a point in front of a fleeing ship is not the distance to the ship. */
+  cmd.dist = _rel.length();
+  return cmd;
 }
