@@ -15,6 +15,9 @@ import * as THREE from 'three';
    ========================================================================== */
 
 const _v = new THREE.Vector3();
+// Screen rectangle the canopy markers must keep clear of, or null. Set once a
+// frame in updateMarkers; see the note there.
+let _reserved = null;
 
 export class HUD {
   constructor(game) {
@@ -248,6 +251,12 @@ export class HUD {
     const cabin = (g.mode !== 'exterior' && g.interior && g.interior.seesSky)
       ? g.interior : null;
 
+    // Re-measured each frame rather than cached: the panel changes height as
+    // contacts come and go, and is absent entirely in single player.
+    const cts = document.getElementById('contacts');
+    _reserved = (cts && !cts.classList.contains('hidden'))
+      ? cts.getBoundingClientRect() : null;
+
     for (const b of bodies) {
       _v.copy(b.absPos).sub(g.origin);
       const dist = _v.distanceTo(cam.position);
@@ -259,6 +268,16 @@ export class HUD {
 
       const sx = (_v.x * 0.5 + 0.5) * innerWidth;
       const sy = (-_v.y * 0.5 + 0.5) * innerHeight;
+
+      /* The contacts panel is opaque and lives in the top right, so a canopy
+         label landing under it is a label nobody can read. Same principle as
+         the declutter below — one marker missing beats two things on top of
+         each other — applied to a fixed rectangle instead of another marker. */
+      if (_reserved) {
+        const R = _reserved;
+        if (sx > R.left - 12 && sx < R.right + 12 && sy > R.top - 12 && sy < R.bottom + 12) continue;
+      }
+
       let crowded = false;
       for (const q of placed) {
         if (Math.abs(q.x - sx) < MIN_SEP && Math.abs(q.y - sy) < MIN_SEP) { crowded = true; break; }

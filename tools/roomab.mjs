@@ -15,8 +15,16 @@ const room = new Room({ seed: 20260725, systemId: 0 });
 const p = room.add('A');
 
 const { bodies } = createSimWorld(20260725, 0);
+/* Start from the room's own spawn state, all of it.
+   Copying only the position was enough while spawn set only a position; it now
+   also faces new arrivals at the planet they appear beside, and a mirror that
+   kept an identity quaternion was flying a different ship from tick one. The
+   premise of this comparison is identical initial state, so take it whole. */
 const ship = createShipState();
 ship.absPos.copy(p.ship.absPos);
+ship.vel.copy(p.ship.vel);
+ship.quat.copy(p.ship.quat);
+ship.angVel.copy(p.ship.angVel);
 const host = createQuietHost(ship);
 
 /* A unit is a kilometre and the trace spends most of its time in a fold at

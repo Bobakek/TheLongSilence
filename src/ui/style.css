@@ -212,6 +212,42 @@ button{font-family:inherit;color:inherit;background:none;border:none;cursor:poin
 #alert{position:absolute;left:50%;top:calc(20% + var(--safe-t));transform:translateX(-50%);
   font-size:12px;letter-spacing:.3em;color:var(--rd)}
 
+/* ============================ CONTACTS ============================ */
+/* Top right, opposite the log, clear of the perf readout and of the canopy
+   markers that cluster toward the middle. Deliberately narrow: it is a
+   reference, not a screen, and the moment it is wide enough to read as a panel
+   it starts competing with the windscreen. */
+#contacts{position:absolute;right:calc(22px + var(--safe-r));top:calc(22px + var(--safe-t));
+  width:236px;font-family:var(--mono);pointer-events:none;
+  background:linear-gradient(270deg,rgba(8,17,26,.72),rgba(8,17,26,.10));
+  clip-path:polygon(0 0,100% 0,100% 100%,0 100%,0 7px);
+  padding:8px 12px 7px;animation:ctIn .3s cubic-bezier(.2,.8,.2,1)}
+@keyframes ctIn{from{opacity:0;transform:translateX(12px)}}
+#contacts.hidden{display:none}
+.ct-head{display:flex;align-items:baseline;justify-content:space-between;
+  padding-bottom:6px;margin-bottom:5px;border-bottom:1px solid var(--line-s)}
+.ct-title{font-size:9px;letter-spacing:.30em;color:var(--dim)}
+.ct-count{font-size:11px;letter-spacing:.1em;color:var(--cy)}
+/* One row per contact. The grid keeps the distance column aligned, which is
+   the whole reason to have a list rather than three labels on the canopy. */
+.ct-row{display:grid;grid-template-columns:9px 1fr auto;align-items:baseline;gap:7px;
+  font-size:9.5px;letter-spacing:.11em;padding:3px 0;color:rgba(198,226,240,.86)}
+.ct-row .ct-b{font-size:11px;line-height:1;text-align:center}
+.ct-row .ct-n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ct-row .ct-d{color:var(--dim);font-variant-numeric:tabular-nums}
+/* Same three hues the beacons use, so a row and the spark it refers to are
+   obviously the same contact. */
+.ct-row.pilot .ct-b{color:#fff0c8}
+.ct-row.pilot .ct-n{color:#fff4d8}
+.ct-row.patrol .ct-b{color:#9ec8ff}
+.ct-row.raider .ct-b{color:#ff7a4a}
+.ct-row.raider .ct-n{color:#ffb79a}
+.ct-empty{font-size:9px;letter-spacing:.2em;color:var(--dim);padding:4px 0 2px}
+.ct-foot{margin-top:6px;padding-top:5px;border-top:1px solid var(--line-s);
+  font-size:8.5px;letter-spacing:.2em;color:var(--dim)}
+.ct-foot kbd{font:inherit;color:rgba(158,234,255,.9)}
+@media (max-width:1100px){ #contacts{width:196px} }
+
 /* ============================ PANELS ============================ */
 /* Opening a panel is a shot in its own right — it lands on camera in the
    trailer and it is the only transition the flat UI has. So the ground fades

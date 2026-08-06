@@ -109,6 +109,19 @@
 
     <!-- damage / alert vignette handled in post; this is the audio-cue text -->
     <div id="alert" class="hidden"></div>
+
+    <!-- Contacts. Networked only: a hull is a tenth of a unit long and every
+         other ship in the room is a beacon a few pixels across somewhere in a
+         field of fourteen thousand stars, so a list of who is out there and
+         how far is the difference between a room and an empty sky. -->
+    <div id="contacts" class="hidden">
+      <div class="ct-head">
+        <span class="ct-title">CONTACTS</span>
+        <span class="ct-count" id="ctCount">0</span>
+      </div>
+      <div id="ctList"></div>
+      <div class="ct-foot"><kbd>B</kbd> all</div>
+    </div>
   </div>
 
   <!-- ====================== ARCHIVE ====================== -->

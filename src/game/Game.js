@@ -852,6 +852,10 @@ export class Game {
       this.remoteShips?.update(this.net.remotes, this.origin, this.camera,
         (this.engine.height || 1080) * (this.engine.pixelRatio || 1));
       this.tracers?.update(this.net.bolts, this.origin, `p:${this.net.id}`);
+      if (this.contacts) {
+        if (!uiOpen && input.tappedCode('KeyB')) this.contacts.toggle();
+        this.contacts.update(this.net.remotes, ship);
+      }
       this._drainNetEvents();
       this._netScanView();
       this.updatePost(dt);
@@ -2752,8 +2756,9 @@ export class Game {
    * socket only ever carries ships.
    */
   async connectNet(url, system = 0) {
-    const [{ NetClient }, { RemoteShips }, { Tracers }] = await Promise.all([
-      import('../net/Client.js'), import('../net/RemoteShips.js'), import('../net/Tracers.js'),
+    const [{ NetClient }, { RemoteShips }, { Tracers }, { ContactList }] = await Promise.all([
+      import('../net/Client.js'), import('../net/RemoteShips.js'),
+      import('../net/Tracers.js'), import('../net/ContactList.js'),
     ]);
     const net = new NetClient(url, { system });
     await net.connect();
@@ -2815,6 +2820,8 @@ export class Game {
     this.net = net;
     this.remoteShips = new RemoteShips(this.scene);
     this.tracers = new Tracers(this.scene);
+    this.contacts = new ContactList();
+    this.contacts.show(true);
     this.hud.log(`ROOM · ${this.system.star.name.toUpperCase()} · PILOT ${net.id}`, 'ok');
     if (mine.returning) {
       this.hud.log(`ARCHIVE RESTORED · ${this.discoveries.size} SURVEYED · `
