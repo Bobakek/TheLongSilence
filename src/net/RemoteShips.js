@@ -28,7 +28,12 @@ import { buildHull } from '../ship/hull.js';
    is one fewer place to get that wrong.
    ========================================================================== */
 
-const BEACON_PX = 5.0;          // how many pixels across the spark should sit
+const BEACON_PX = 5.0;          // fallback size, before a contact is classified
+/* How each kind of contact reads, in pixels across and in hue. Another pilot
+   is the thing you most want to find, so it is the biggest and the warmest. */
+const PILOT = { px: 8.0, hex: 0xfff0c8 };
+const PATROL = { px: 5.0, hex: 0x9ec8ff };
+const HOSTILE = { px: 6.0, hex: 0xff7a4a };
 const _v = new THREE.Vector3();
 
 let _template = null;
@@ -122,8 +127,21 @@ export class RemoteShips {
       rig.root.position.copy(r.absPos).sub(origin);
       rig.root.quaternion.copy(r.quat);
 
+      /* Colour and size say what it is before anything else can.
+         A hull is a tenth of a unit long, so at any distance worth calling a
+         distance it is well under a pixel and the beacon is the whole of what
+         a pilot sees. Making every contact the same cold white meant another
+         pilot and a hostile raider were the same dot. */
+      const style = r.isNpc
+        ? (r.hostile || r.npcKind === 'raider' ? HOSTILE : PATROL)
+        : PILOT;
+      if (rig.style !== style) {
+        rig.style = style;
+        rig.beacon.material.color.setHex(style.hex);
+      }
+
       const depth = _v.copy(rig.root.position).sub(camera.position).length();
-      rig.beacon.scale.setScalar(Math.max(1e-4, depth * perPixel * BEACON_PX));
+      rig.beacon.scale.setScalar(Math.max(1e-4, depth * perPixel * style.px));
       // Brighter under power, so a burning drive reads across a system.
       rig.beacon.material.opacity = r.foldMode ? 1.0 : 0.55 + 0.45 * (r.throttle || 0);
     }

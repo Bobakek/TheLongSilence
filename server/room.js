@@ -7,6 +7,10 @@ import {
 import * as THREE from 'three';
 
 const _fireDir = new THREE.Vector3();
+const _spawnAnchor = new THREE.Vector3();
+const _spawnOff = new THREE.Vector3();
+const _spawnUp = new THREE.Vector3(0, 1, 0);
+const _spawnLook = new THREE.Matrix4();
 /* A ceiling on bolts in flight, so a stuck trigger cannot make the room's
    per-tick cost unbounded. Four a second per shooter and a two-second life
    means a busy system sits nowhere near this. */
@@ -226,14 +230,37 @@ export class Room {
    */
   spawn(p) {
     const planet = this.bodies.find((b) => b.kind === 'planet') || this.bodies[0];
+
+    /* A common anchor, with pilots fanned a few hundred units around it.
+     *
+     * The fan used to be a ring of `planet.radius * 4` — eleven thousand units
+     * for a modest world — which put two arrivals between fifteen and twenty
+     * thousand units apart. A hull is a tenth of a unit long, so at that range
+     * it subtends about one and a half arcseconds: invisible. All that was left
+     * of another pilot was their beacon, a few pixels somewhere in a field of
+     * fourteen thousand stars. Two people could join the same room and
+     * genuinely never find one another, which is a strange way for a
+     * multiplayer game to open.
+     *
+     * The golden angle stays — it is what keeps arrivals from stacking inside
+     * each other — but on a radius measured in ship lengths rather than
+     * planetary ones. A hundred and fifty units is close enough to see a hull
+     * and a drive plume, and a couple of seconds apart at cruise. */
+    const anchor = _spawnAnchor.copy(planet.absPos)
+      .add(_spawnOff.set(0, planet.radius * 0.35, planet.radius * 3.0));
     const a = p.id * 2.399963;                      // golden angle, so ids spread
-    const r = planet.radius * 4.0;
+    const r = 150;
     p.ship.absPos.set(
-      planet.absPos.x + Math.cos(a) * r,
-      planet.absPos.y + Math.sin(a * 0.7) * r * 0.25,
-      planet.absPos.z + Math.sin(a) * r,
+      anchor.x + Math.cos(a) * r,
+      anchor.y + Math.sin(a * 0.7) * r * 0.4,
+      anchor.z + Math.sin(a) * r,
     );
     p.ship.vel.set(0, 0, 0);
+    /* Facing the anchor's own world, so a new arrival opens on the planet
+       rather than on empty sky — and so two pilots who spawn together are
+       looking the same way and see each other in frame. */
+    _spawnLook.lookAt(p.ship.absPos, planet.absPos, _spawnUp);
+    p.ship.quat.setFromRotationMatrix(_spawnLook);
   }
 
   /** Everything a bolt may hit, pilots and hunters alike. */

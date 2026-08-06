@@ -474,6 +474,7 @@ export class NetClient {
       r.npcKind = o.k;
       r.faction = o.f2;
       r.aiState = o.st;
+      r.hostile = !!o.h;
       r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat);
       r.prev.at = r.next.at; r.prev.tick = r.next.tick;
       r.next.pos.set(o.p[0], o.p[1], o.p[2]);
