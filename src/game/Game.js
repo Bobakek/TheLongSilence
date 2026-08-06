@@ -41,7 +41,7 @@ import {
   resonatorSystemsFor as simResonatorSystems, resonatorIndexFor as simResonatorIndex,
   placeAnomalies as simPlaceAnomalies,
   canJump as simCanJump, payJump as simPayJump,
-  steerToward as simSteerToward,
+  steerToward as simSteerToward, steerToIntercept as simSteerToIntercept,
 } from '../sim/index.js';
 
 // reused by applyAutopilot every frame; steerToward writes into it
@@ -2676,6 +2676,7 @@ export class Game {
   cancelAutopilot(quiet) {
     if (!this.autopilot) return;
     this.autopilot = null;
+    if (this.contacts) this.contacts.navId = null;
     if (!quiet) this.hud.log('AUTOPILOT DISENGAGED');
   }
 
@@ -2683,6 +2684,12 @@ export class Game {
   standoffFor(b) {
     if (b.kind === 'star') return b.radius * 9;
     if (b.kind === 'anomaly') return Math.max(b.radius * 3.5, 4);
+    /* A ship, not a world. `radius * 3` would be a third of a unit, which is
+       inside the other hull; the framing distances above are all derived from
+       bodies that are thousands of units across. Twenty-five units is close
+       enough that a tenth-of-a-unit hull is a few pixels rather than a spark,
+       and far enough not to arrive inside someone. */
+    if (b.kind === 'craft') return 25;
     return b.radius * 3.0;
   }
 
@@ -2700,12 +2707,24 @@ export class Game {
       return raw;
     }
 
+    /* A contact can leave. Another pilot disconnects or folds out, a hunter is
+       destroyed, and the record stops being listed — but the object survives
+       with the last position it was seen at, and flying to that is flying to
+       an empty patch of sky with total confidence. Bodies never do this, which
+       is why the check did not exist until contacts became targets. */
+    if (ap.body.kind === 'craft' && ap.body.seen === false) {
+      this.hud.log('CONTACT LOST', 'hi');
+      this.audio.ping('deny');
+      this.cancelAutopilot(true);
+      return raw;
+    }
+
     /* The control law is `steerToward` in src/sim — an AI that pursues is an
        autopilot with a different opinion about where to go, so the two share
        it rather than each carrying their own copy of a sign that was wrong
        here for the whole life of the project. What is left below is the
        *policy*: how close to stop, when to fold, and what to say on arrival. */
-    const cmd = simSteerToward(ship, ap.body.absPos, _steer);
+    const cmd = this._steerAt(ap.body);
     const standoff = this.standoffFor(ap.body);
     const over = cmd.dist - standoff;
 
@@ -2802,6 +2821,9 @@ export class Game {
         i.pressed.delete('scanClick');
         return held;
       },
+      autopilot: () => { this._apFold = false; return this._autopilotInput(); },
+      // the autopilot's own hand on the fold switch; see _autopilotInput
+      autoFold: () => !!this._apFold,
       firing: () => {
         if (this.starmap.open || this.codex.open) return false;
         // Only from the helm. Shooting while walking the corridor would be a
@@ -2820,7 +2842,7 @@ export class Game {
     this.net = net;
     this.remoteShips = new RemoteShips(this.scene);
     this.tracers = new Tracers(this.scene);
-    this.contacts = new ContactList();
+    this.contacts = new ContactList({ onPick: (c) => this.flyToContact(c) });
     this.contacts.show(true);
     this.hud.log(`ROOM · ${this.system.star.name.toUpperCase()} · PILOT ${net.id}`, 'ok');
     if (mine.returning) {
@@ -2828,6 +2850,131 @@ export class Game {
         + `${this.cantos.length}/7 CANTOS`, 'ok');
     }
     return net;
+  }
+
+  /**
+   * Take a contact from the list and fly to it.
+   *
+   * The contact object goes straight to the autopilot: it already carries a
+   * live `absPos` that the interpolator rewrites every frame, and `_ensure`
+   * gives it the `kind` and `radius` the autopilot was written to expect. So
+   * the ship chases where the contact *is*, not where it was when it was
+   * picked — which for something moving at cruise is the whole difference
+   * between a rendezvous and a trip to an empty patch of sky.
+   */
+  flyToContact(c) {
+    if (!c) return;
+    if (this.mode === 'walk') {
+      this.hud.log('TAKE THE HELM FIRST', 'hi');
+      this.audio.ping('deny');
+      return;
+    }
+    // Clicking the one already selected is how you call it off.
+    if (this.autopilot && this.autopilot.body === c) {
+      this.cancelAutopilot();
+      this.contacts.navId = null;
+      return;
+    }
+    this.autopilot = { body: c, phase: 'align' };
+    this.contacts.navId = c.id;
+    /* Deliberately not `this.target`. In a room the scanner's target is the
+       room's to decide — `_netScanView` rewrites it from the server's own aim
+       resolution every frame — so assigning it here would flicker for one
+       frame and then lie. The highlighted row is what says where we are going. */
+    const label = c.isNpc ? (c.npcKind || 'contact').toUpperCase() : (c.name || `PILOT ${c.id}`);
+    this.hud.log(`AUTOPILOT · ${label}`, 'ok');
+    this.audio.ping('ui');
+  }
+
+  /**
+   * The autopilot, as a stick rather than as a hand on the controls.
+   *
+   * Alone, `applyAutopilot` steers by writing `ship.throttle` and calling
+   * `toggleFold` — it owns the ship. In a room it owns nothing: the server
+   * decides where the ship goes and the client's only channel is the input it
+   * sends. So the same policy runs here and comes out as the seven numbers a
+   * pilot's hand would have produced.
+   *
+   * Throttle goes through `throttleDelta` for the same reason the hunters'
+   * does — `applyDriveInput` recomputes throttle from the stick, so assigning
+   * it directly would be overwritten a moment later. That lesson cost a
+   * milestone in M5.
+   *
+   * Returns null when there is nothing to fly to, and the caller falls back to
+   * the pilot's own stick.
+   */
+  /**
+   * Steering toward a destination, leading it when it is going somewhere.
+   *
+   * A planet is effectively still and pure pursuit is fine for it. A ship is
+   * not: chasing where another craft *is* rather than where it will be is a
+   * stern chase, and against anything of comparable speed it is a stern chase
+   * you lose — measured at a contact opening the range from 146 to 226 units
+   * while under "pursuit". The hunters have led their marks since M5; this is
+   * the same call.
+   */
+  _steerAt(body) {
+    return (body.vel && body.kind === 'craft')
+      ? simSteerToIntercept(this.ship, body.absPos, body.vel, this.ship.maxSpeed, _steer)
+      : simSteerToward(this.ship, body.absPos, _steer);
+  }
+
+  _autopilotInput() {
+    const ap = this.autopilot;
+    if (!ap || !ap.body) return null;
+
+    // the contact left the room; see applyAutopilot for the same guard
+    if (ap.body.kind === 'craft' && ap.body.seen === false) {
+      this.hud.log('CONTACT LOST', 'hi');
+      this.audio.ping('deny');
+      this.cancelAutopilot(true);
+      return null;
+    }
+
+    // a hand on the stick takes it back, exactly as it does single player
+    const s = this.input.state;
+    if (Math.abs(s.pitch) > 0.22 || Math.abs(s.yaw) > 0.22 || Math.abs(s.roll) > 0.4) {
+      this.cancelAutopilot();
+      return null;
+    }
+
+    const ship = this.ship;
+    const cmd = this._steerAt(ap.body);
+    const standoff = this.standoffFor(ap.body);
+    const over = cmd.dist - standoff;
+
+    let want;
+    if (over < standoff * 0.35) {
+      want = 0;
+      if (ship.speed < 4) {
+        this.hud.log(`ARRIVED · ${ap.body.name || 'CONTACT'}`, 'ok');
+        this.audio.ping('arrive');
+        this.cancelAutopilot(true);
+      }
+    } else {
+      want = cmd.aligned ? 1 : 0.35;
+    }
+
+    /* The drive, requested rather than thrown.
+     *
+     * Contacts are routinely millions of units away — patrols anchor to
+     * whichever world they watch, and a system is millions across — so an
+     * autopilot that only ever cruises is an autopilot for nothing. At sixty
+     * units a second, the first target this was tried on was seven hours out.
+     *
+     * The fold is the server's to engage, so this asks for it with the same
+     * button a pilot presses. The request is held until the room reports the
+     * state actually changed: holding produces exactly one edge server-side,
+     * which is exactly one toggle, and the moment `foldMode` agrees with what
+     * was wanted the request stops and the button falls back to zero. */
+    const near = this.nearestBodyInfo();
+    const wantFold = over > 2600 && near.surfaceDist > 400
+      && (cmd.aligned || ship.foldMode) && (ship.foldCharge > 0.15 || ship.foldMode);
+    this._apFold = wantFold !== ship.foldMode;
+
+    cmd.throttleDelta = THREE.MathUtils.clamp((want - ship.throttle) * 8, -1, 1);
+    cmd.boost = 0;
+    return cmd;
   }
 
   /** Turn what the room reported into the noises the cockpit would have made. */

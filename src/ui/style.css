@@ -230,8 +230,18 @@ button{font-family:inherit;color:inherit;background:none;border:none;cursor:poin
 .ct-count{font-size:11px;letter-spacing:.1em;color:var(--cy)}
 /* One row per contact. The grid keeps the distance column aligned, which is
    the whole reason to have a list rather than three labels on the canopy. */
+/* The rows are the only interactive thing on the HUD, so they take pointer
+   events back from the panel. Note that the canvas holds a pointer lock while
+   you are flying; releasing it with Escape is what makes the list clickable,
+   and the footer says so. */
 .ct-row{display:grid;grid-template-columns:9px 1fr auto;align-items:baseline;gap:7px;
-  font-size:9.5px;letter-spacing:.11em;padding:3px 0;color:rgba(198,226,240,.86)}
+  font-size:9.5px;letter-spacing:.11em;padding:3px 0;color:rgba(198,226,240,.86);
+  pointer-events:auto;cursor:pointer;transition:background .12s,color .12s}
+.ct-row:hover{background:rgba(143,228,255,.10);color:#eaf8ff}
+.ct-row:active{background:rgba(143,228,255,.18)}
+/* the one being flown to */
+.ct-row.nav{background:rgba(255,196,138,.12)}
+.ct-row.nav .ct-d{color:var(--am)}
 .ct-row .ct-b{font-size:11px;line-height:1;text-align:center}
 .ct-row .ct-n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ct-row .ct-d{color:var(--dim);font-variant-numeric:tabular-nums}

@@ -44,13 +44,25 @@ function bearing(dot) {
 }
 
 export class ContactList {
-  constructor() {
+  constructor({ onPick = null } = {}) {
     this.root = document.getElementById('contacts');
     this.list = document.getElementById('ctList');
     this.count = document.getElementById('ctCount');
     this.expanded = false;
     this.rows = [];
     this._sig = '';
+    this.onPick = onPick;
+    /** Id of the contact currently being flown to, for the row highlight. */
+    this.navId = null;
+
+    /* One delegated listener rather than one per row: the rows are pooled and
+       reused as contacts come and go, so handlers bound to a row would end up
+       closed over whichever contact happened to be in it when it was created. */
+    this.list?.addEventListener('click', (e) => {
+      const row = e.target.closest('.ct-row');
+      if (!row || !row._contact) return;
+      this.onPick?.(row._contact);
+    });
   }
 
   toggle() { this.expanded = !this.expanded; return this.expanded; }
@@ -86,7 +98,7 @@ export class ContactList {
        hashed and skipped when it has not moved a meaningful amount. Distance
        is bucketed for the same reason: without it the signature changes every
        single frame and the guard never fires. */
-    const sig = `${this.expanded}|` + shown
+    const sig = `${this.expanded}|${this.navId}|` + shown
       .map((s) => `${s.r.id}:${bearing(s.dot)}:${fmtDist(s.dist)}`).join('|');
     if (sig === this._sig) return;
     this._sig = sig;
@@ -105,7 +117,9 @@ export class ContactList {
       const { cls, tag } = classify(r);
       const row = this.rows[i];
       row.el.style.display = '';
-      row.el.className = `ct-row ${cls}`;
+      row.el.className = `ct-row ${cls}${r.id === this.navId ? ' nav' : ''}`;
+      // what a click on this row means, kept on the element itself
+      row.el._contact = r;
       row.b.textContent = bearing(dot);
       row.n.textContent = r.isNpc ? tag : (r.name || `PILOT ${String(r.id).replace(/^p:/, '')}`);
       row.d.textContent = fmtDist(dist);

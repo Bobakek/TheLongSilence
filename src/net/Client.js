@@ -421,6 +421,7 @@ export class NetClient {
         r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat);
         r.prev.at = now - TICK_DT; r.prev.tick = m.tick - 1;
       }
+      if (o.v) r.vel.set(o.v[0], o.v[1], o.v[2]);
       r.throttle = o.th; r.boost = o.bo; r.foldMode = !!o.f;
       r.seen = true;
     }
@@ -484,6 +485,7 @@ export class NetClient {
         r.prev.pos.copy(r.next.pos); r.prev.quat.copy(r.next.quat);
         r.prev.at = now - TICK_DT; r.prev.tick = m.tick - 1;
       }
+      if (o.v) r.vel.set(o.v[0], o.v[1], o.v[2]);
       r.throttle = o.th; r.boost = o.bo; r.foldMode = !!o.f;
       r.seen = true;
     }
@@ -493,8 +495,16 @@ export class NetClient {
     let r = this.remotes.get(id);
     if (!r) {
       r = {
-        id, name: `PILOT-${id}`, seen: false,
+        /* `kind` and `radius` so a contact can be handed straight to the
+           autopilot, which was written for bodies. A contact already carries a
+           live `absPos` — the interpolator writes it every frame — so it needs
+           nothing else to be flown to. */
+        id, name: `PILOT-${id}`, seen: false, kind: 'craft', radius: 0.05,
         absPos: new THREE.Vector3(), quat: new THREE.Quaternion(),
+        // Kept so the autopilot can lead a moving contact rather than chase
+        // its tail. Not interpolated — a velocity one snapshot old is a fine
+        // basis for a lead, and smoothing it would only add lag to the lead.
+        vel: new THREE.Vector3(),
         throttle: 0, boost: 0, foldMode: false,
         prev: { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), at: 0, tick: 0 },
         next: { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), at: 0, tick: 0 },
@@ -530,9 +540,12 @@ export class NetClient {
    * only appears while the boost is held, which is the worst kind.
    */
   makeSampler(state, extra = {}) {
-    const { aim = null, scanning = null, firing = null } = extra;
+    const { aim = null, scanning = null, firing = null, autopilot = null, autoFold = null } = extra;
     return () => ({
-      raw: {
+      /* The autopilot, when engaged, *is* the stick. It cannot steer the ship
+         directly in a room — the server owns that — so it produces the same
+         seven numbers a hand would and they go out on the same wire. */
+      raw: (autopilot && autopilot()) || {
         pitch: state.pitch, yaw: state.yaw, roll: state.roll,
         strafeX: state.strafeX, strafeY: state.strafeY,
         throttleDelta: state.throttleDelta,
@@ -544,7 +557,8 @@ export class NetClient {
       buttons: this.takeButtons()
         | (state.boost ? BTN.BOOST : 0)
         | (scanning && scanning() ? BTN.SCAN : 0)
-        | (firing && firing() ? BTN.FIRE : 0),
+        | (firing && firing() ? BTN.FIRE : 0)
+        | (autoFold && autoFold() ? BTN.FOLD : 0),
       aim: aim ? aim() : null,
     });
   }
