@@ -29,11 +29,28 @@ import { buildHull } from '../ship/hull.js';
    ========================================================================== */
 
 const BEACON_PX = 5.0;          // fallback size, before a contact is classified
-/* How each kind of contact reads, in pixels across and in hue. Another pilot
-   is the thing you most want to find, so it is the biggest and the warmest. */
-const PILOT = { px: 8.0, hex: 0xfff0c8 };
-const PATROL = { px: 5.0, hex: 0x9ec8ff };
-const HOSTILE = { px: 6.0, hex: 0xff7a4a };
+
+/* ------------------------------------------------------------ the gain
+
+   The trap this project documents in Fleet.js and which I walked into anyway:
+   "BEACON_HDR is the difference between a running light and a grey dot".
+
+   These quads land in a scene-linear HDR target and go through AgX with
+   everything else, and a pixel needs something like 120 units of radiance
+   before AgX returns white. A `SpriteMaterial` colour is at most 1.0 per
+   channel, so a beacon authored as a hex colour arrives at roughly one per
+   cent of the value it needs and tonemaps to nothing. Against a starfield
+   whose stars are authored in real HDR, it is invisible — which, with a hull
+   that is a tenth of a unit long and therefore sub-pixel at any distance worth
+   the name, meant a contact could be flown to and never seen at all.
+
+   Colours are multiplied into HDR range below. A pilot sits above the clip
+   point and blooms, because finding another pilot is the whole purpose of the
+   thing; the two machine contacts sit under it. */
+const HDR = 44;
+const PILOT = { px: 8.0, hex: 0xfff0c8, gain: 2.1 };
+const PATROL = { px: 5.0, hex: 0x9ec8ff, gain: 1.3 };
+const HOSTILE = { px: 6.0, hex: 0xff7a4a, gain: 1.7 };
 const _v = new THREE.Vector3();
 
 let _template = null;
@@ -137,7 +154,8 @@ export class RemoteShips {
         : PILOT;
       if (rig.style !== style) {
         rig.style = style;
-        rig.beacon.material.color.setHex(style.hex);
+        // setHex decodes to linear; the multiply is what puts it in HDR range
+        rig.beacon.material.color.setHex(style.hex).multiplyScalar(HDR * style.gain);
       }
 
       const depth = _v.copy(rig.root.position).sub(camera.position).length();

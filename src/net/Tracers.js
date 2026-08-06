@@ -19,6 +19,7 @@ import * as THREE from 'three';
 
 const MAX = 512;                  // bolts drawn at once; the room caps at 400
 const STREAK = 0.05;              // units of visible trail, about half a ship
+const TRACER_HDR = 70;            // scene-linear radiance; see the note below
 
 export class Tracers {
   constructor(scene) {
@@ -64,10 +65,18 @@ export class Tracers {
       P[k] = x; P[k + 1] = y; P[k + 2] = z;
       P[k + 3] = x - vx * s; P[k + 4] = y - vy * s; P[k + 5] = z - vz * s;
 
-      // Ours cool, theirs hot — the one thing a pilot needs to read instantly
-      // in a fight is which streaks are coming towards them.
+      /* Ours cool, theirs hot — the one thing a pilot needs to read instantly
+         in a fight is which streaks are coming towards them.
+
+         Written in HDR for the same reason the beacons are: these land in a
+         scene-linear target and go through AgX, which wants something like 120
+         units of radiance before it returns white. A bolt authored at 1.0 is a
+         grey line that tonemaps to nothing — see the gain note in
+         RemoteShips.js and the original in Fleet.js. */
       const mine = b.o === mineId;
-      const r = mine ? 0.55 : 1.0, g = mine ? 0.85 : 0.45, bl = mine ? 1.0 : 0.25;
+      const r = (mine ? 0.55 : 1.0) * TRACER_HDR;
+      const g = (mine ? 0.85 : 0.45) * TRACER_HDR;
+      const bl = (mine ? 1.0 : 0.25) * TRACER_HDR;
       C[k] = r; C[k + 1] = g; C[k + 2] = bl;
       C[k + 3] = r * 0.15; C[k + 4] = g * 0.15; C[k + 5] = bl * 0.15;   // tail fades
       n++;
