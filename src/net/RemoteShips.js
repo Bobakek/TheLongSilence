@@ -48,9 +48,17 @@ const BEACON_PX = 5.0;          // fallback size, before a contact is classified
    point and blooms, because finding another pilot is the whole purpose of the
    thing; the two machine contacts sit under it. */
 const HDR = 44;
-const PILOT = { px: 8.0, hex: 0xfff0c8, gain: 2.1 };
-const PATROL = { px: 5.0, hex: 0x9ec8ff, gain: 1.3 };
-const HOSTILE = { px: 6.0, hex: 0xff7a4a, gain: 1.7 };
+/* `pulse` is the period in seconds of an anti-collision flash, or 0 for a
+   steady lamp. Brightness alone does not make a marker findable: a starfield
+   of fourteen thousand points is full of bright steady dots, and an eight
+   pixel spark among them is something you can find rather than something you
+   see. What a star cannot do is blink. The fleet's own craft carry strobes for
+   exactly this reason — `mode 1` in Fleet.js is a xenon anti-collision flash —
+   so a pilot marker that flashes is reading from the game's own vocabulary,
+   not inventing a HUD convention. */
+const PILOT = { px: 14.0, hex: 0xfff0c8, gain: 2.4, pulse: 1.6 };
+const PATROL = { px: 6.0, hex: 0x9ec8ff, gain: 1.3, pulse: 0 };
+const HOSTILE = { px: 8.0, hex: 0xff7a4a, gain: 1.7, pulse: 2.6 };
 const _v = new THREE.Vector3();
 
 let _template = null;
@@ -127,7 +135,7 @@ export class RemoteShips {
    *   camera   for the beacon's pixel-size solve
    *   heightPx the drawing buffer height, same units the solve is in
    */
-  update(remotes, origin, camera, heightPx) {
+  update(remotes, origin, camera, heightPx, time = 0) {
     for (const [id, rig] of this.rigs) {
       if (!remotes.has(id)) { this._dispose(id, rig); }
     }
@@ -159,9 +167,19 @@ export class RemoteShips {
       }
 
       const depth = _v.copy(rig.root.position).sub(camera.position).length();
-      rig.beacon.scale.setScalar(Math.max(1e-4, depth * perPixel * style.px));
+
+      /* The flash: a hard double-blink and a long gap, the shape the hull's own
+         anti-collision strobe uses. A sine would read as something breathing;
+         two sharp pulses read as a machine announcing itself. */
+      let flash = 1;
+      if (style.pulse) {
+        const cyc = (time / style.pulse) % 1;
+        flash = (cyc < 0.10 || (cyc > 0.18 && cyc < 0.28)) ? 1 : 0.28;
+      }
+
+      rig.beacon.scale.setScalar(Math.max(1e-4, depth * perPixel * style.px * (0.7 + 0.3 * flash)));
       // Brighter under power, so a burning drive reads across a system.
-      rig.beacon.material.opacity = r.foldMode ? 1.0 : 0.55 + 0.45 * (r.throttle || 0);
+      rig.beacon.material.opacity = (r.foldMode ? 1.0 : 0.55 + 0.45 * (r.throttle || 0)) * flash;
     }
   }
 

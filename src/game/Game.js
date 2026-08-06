@@ -850,7 +850,7 @@ export class Game {
       // Drawing-buffer height, not CSS height: the beacon solve is in device
       // pixels, and dynamic resolution moves the two apart every few seconds.
       this.remoteShips?.update(this.net.remotes, this.origin, this.camera,
-        (this.engine.height || 1080) * (this.engine.pixelRatio || 1));
+        (this.engine.height || 1080) * (this.engine.pixelRatio || 1), this.time);
       this.tracers?.update(this.net.bolts, this.origin, `p:${this.net.id}`);
       if (this.contacts) {
         if (!uiOpen && input.tappedCode('KeyB')) this.contacts.toggle();
