@@ -233,9 +233,32 @@ export class HUD {
     }
     const cam = g.camera;
     const seen = new Set();
-    const bodies = g.bodies.slice()
-      .sort((a, b) => a.absPos.distanceToSquared(g.ship.absPos) - b.absPos.distanceToSquared(g.ship.absPos))
-      .slice(0, 10);
+
+    /* Other ships get canopy labels too, and they need them more than the
+       worlds do.
+     *
+     * A body is thousands of units across and announces itself; a ship is a
+     * tenth of a unit and all there is to see of one is a spark. Brightening
+     * that spark and making it blink both help, but neither answers the
+     * question a pilot is actually asking, which is *where do I look* — and a
+     * label pinned to it on the glass answers exactly that. The contacts panel
+     * says a pilot is 300 units off the bow; this says which of the fourteen
+     * thousand points of light it is. */
+    const byRange = (a, b) =>
+      a.absPos.distanceToSquared(g.ship.absPos) - b.absPos.distanceToSquared(g.ship.absPos);
+
+    /* Contacts are taken whole, then the worlds fill what is left.
+       Ranking everything together by distance sounds fairer and is wrong here:
+       a patrol watching a world on the far side of a system is a million units
+       out and gets crowded off the list by moons, which is precisely the
+       contact a pilot most needs pointing at. There are never many ships and
+       there are always plenty of moons. */
+    const contacts = g.net
+      ? [...g.net.remotes.values()].filter((r) => r.seen).sort(byRange).slice(0, 8)
+      : [];
+    const bodies = contacts
+      .concat(g.bodies.slice().sort(byRange).slice(0, 10))
+      .sort(byRange);
 
     // Screen-space declutter. Bodies arrive sorted near-to-far, so the first
     // one to claim a patch of canopy keeps it and anything landing on top of it
@@ -301,11 +324,19 @@ export class HUD {
       }
       m.el.style.display = '';
       m.el.style.transform = `translate(${sx}px, ${sy}px)`;
+      const isContact = b.kind === 'craft' && b.absPos && b.seen !== undefined;
       m.el.className = 'mk'
         + (b.kind === 'anomaly' ? ' anom' : '')
+        + (isContact ? ' contact' : '')
+        + (isContact && (b.hostile || b.npcKind === 'raider') ? ' hostile' : '')
         + (b.scanned ? ' scanned' : '')
-        + (b === g.target ? ' sel' : '');
-      if (m._n !== b.name) { m.name.textContent = b.name; m._n = b.name; }
+        // in a room the scan target is the room's; the one worth marking as
+        // selected is whatever the autopilot is flying to
+        + (b === g.target || (g.autopilot && g.autopilot.body === b) ? ' sel' : '');
+      const label = isContact && b.isNpc
+        ? (b.npcKind || 'contact').toUpperCase()
+        : b.name;
+      if (m._n !== label) { m.name.textContent = label; m._n = label; }
       m.sub.textContent = fmtDist(dist);
     }
     for (const [id, m] of this.markerPool) if (!seen.has(id)) m.el.style.display = 'none';

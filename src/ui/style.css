@@ -111,6 +111,24 @@ button{font-family:inherit;color:inherit;background:none;border:none;cursor:poin
 .mk.anom .mk-dot{fill:var(--am)}
 .mk.scanned .mk-br{stroke:rgba(138,255,193,.55)}
 .mk.sel .mk-br{stroke:var(--cy);stroke-width:1.9}
+
+/* Another ship on the glass.
+   The worlds get a quiet bracket because they are already the size of the
+   windscreen. A contact is a tenth of a unit long and its whole visible
+   presence is one spark, so the bracket is the thing that finds it — warmer,
+   heavier, and drawn tight so it reads as a lock rather than as scenery. The
+   same three hues as the beacons and the contacts panel, because a pilot
+   should be able to match a row, a bracket and a spark without being told. */
+.mk.contact .mk-br{stroke:#fff0c8;stroke-width:1.7;
+  animation:mkIn .38s cubic-bezier(.2,.8,.2,1),mkTick 1.6s steps(1,end) infinite}
+.mk.contact .mk-dot{fill:#fff6dd}
+.mk.contact .mk-lbl{color:#ffeec4}
+.mk.contact .mk-lbl em{color:rgba(255,222,166,.66)}
+/* the same double blink the beacon uses, so the two read as one object */
+@keyframes mkTick{0%,6%{opacity:1}7%,11%{opacity:.45}12%,17%{opacity:1}18%,100%{opacity:.72}}
+.mk.contact.hostile .mk-br{stroke:#ff7a4a}
+.mk.contact.hostile .mk-dot{fill:#ffb79a}
+.mk.contact.hostile .mk-lbl{color:#ffb79a}
 .mk.sel .mk-lbl{color:#e8f8ff}
 
 /* message log */
